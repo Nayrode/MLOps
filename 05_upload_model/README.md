@@ -1,17 +1,30 @@
 # 05 — Upload Model
 
-Registers the trained model artifact in a model registry (MLflow) and tags it with the run metadata.
+Registers the trained model in the MLflow Model Registry and promotes it to `Staging` if it clears the accuracy threshold.
 
 ## Inputs
 
-- Trained model artifact from step 03
-- Evaluation metrics from step 04
+- `data/model.pkl` — trained model from step 03
+- `data/evaluation.json` — metrics from step 04
 
 ## What it does
 
-- Logs model to MLflow Model Registry
-- Attaches metrics, parameters, and dataset metadata to the run
-- Transitions model to `Staging` stage if evaluation thresholds are met
+1. Loads model + metrics
+2. Logs model to MLflow Model Registry as `csgo-match-predictor`
+3. If `accuracy >= 0.60`, transitions the new version to `Staging`
+
+## Outputs
+
+- New registered model version in the MLflow registry
+- Version stage: `Staging` (if threshold met) or `None`
+
+## Environment
+
+Create `.env` (optional — defaults to local `mlruns/`):
+
+```
+MLFLOW_TRACKING_URI=http://localhost:5000
+```
 
 ## Run
 
@@ -21,7 +34,3 @@ uv run jupyter lab
 ```
 
 Open `upload_model.ipynb` and run all cells.
-
-## Notes
-
-- Requires `MLFLOW_TRACKING_URI` set in environment

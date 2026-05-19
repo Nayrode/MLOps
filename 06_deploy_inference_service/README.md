@@ -1,29 +1,41 @@
 # 06 — Deploy Inference Service
 
-Deploys the registered model as an online inference service on Kubernetes using KServe (or Seldon Core).
+Deploys the registered model as a real-time REST endpoint on Kubernetes using KServe.
 
 ## Inputs
 
-- Model URI from MLflow Registry (step 05)
+- `inference_service.yaml` — KServe `InferenceService` manifest
+- Model artefact accessible via the `storageUri` in the YAML (S3 or MLflow artifact store)
 
 ## What it does
 
-- Creates or updates an `InferenceService` custom resource
-- Exposes a REST endpoint for real-time match outcome predictions
-- Handles model download from the registry on startup
+1. Applies the `InferenceService` custom resource
+2. Waits until the service is `Ready`
+3. Prints the prediction endpoint URL (copy it into step 07's `.env`)
 
-## Run
+## Files
 
-```bash
-kubectl apply -f inference_service.yaml
-kubectl get inferenceservice
-```
+| File | Purpose |
+|------|---------|
+| `inference_service.yaml` | KServe manifest — update `storageUri` before applying |
+| `deploy_inference_service.ipynb` | Apply, wait, print endpoint |
 
 ## Endpoint
 
 ```
-POST /v1/models/<model-name>:predict
+POST /v1/models/csgo-match-predictor:predict
 Content-Type: application/json
 
-{"instances": [[elo_diff, winrate_10_diff, ..., map_Vertigo]]}
+{"instances": [[elo_diff, winrate_10_diff, winrate_30_diff, experience_diff, rank_diff, h2h_winrate, map_Cache, ...]]}
 ```
+
+## Run
+
+Update `storageUri` in `inference_service.yaml`, then:
+
+```bash
+uv sync
+uv run jupyter lab
+```
+
+Open `deploy_inference_service.ipynb` and run all cells.

@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: csgo-train
+  labels:
+    app: csgo-match-predictor
+    step: train
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: train
+          image: docker.io/USERNAME/csgo-train:latest  # replace USERNAME
+          envFrom:
+            - configMapRef:
+                name: csgo-train-config
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: model
+              mountPath: /model
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: csgo-data-pvc
+        - name: model
+          persistentVolumeClaim:
+            claimName: csgo-model-pvc
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: csgo-train-config
+data:
+  MLFLOW_TRACKING_URI: "http://mlflow-service:5000"
+  MLFLOW_EXPERIMENT: "csgo-match-predictor"
+  DATA_DIR: "/data"
+  MODEL_DIR: "/model"
+  MAX_ITER: "1000"
+  C: "1.0"
+  SOLVER: "lbfgs"

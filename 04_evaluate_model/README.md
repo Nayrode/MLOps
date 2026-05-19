@@ -1,24 +1,34 @@
 # 04 — Evaluate Model
 
-Evaluates the trained model on the held-out test set and logs metrics.
+Evaluates the trained model on the held-out test set, logs metrics to MLflow, and saves them to disk for step 05.
 
 ## Inputs
 
+- `data/model.pkl` — trained model from step 03
 - `data/X_test.csv`
 - `data/y_test.csv`
-- Trained model artifact from step 03
 
 ## Metrics
 
-- Accuracy
-- ROC AUC
-- Precision / Recall / F1
-- Confusion matrix
+| Metric | Description |
+|--------|-------------|
+| Accuracy | Share of correctly predicted match outcomes |
+| ROC AUC | Area under the ROC curve |
+| Precision / Recall / F1 | Per-class breakdown |
 
 ## Outputs
 
-- Metrics logged to MLflow (or printed to stdout)
-- Optional: evaluation report saved to `data/evaluation.json`
+- `data/evaluation.json` — `{"accuracy": ..., "roc_auc": ...}`
+- `data/confusion_matrix.png` — confusion matrix plot
+- MLflow run with metrics + confusion matrix artifact
+
+## Environment
+
+Create `.env` (optional — defaults to local `mlruns/`):
+
+```
+MLFLOW_TRACKING_URI=http://localhost:5000
+```
 
 ## Run
 

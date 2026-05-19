@@ -1,0 +1,10 @@
+apiVersion: "serving.kserve.io/v1beta1"
+kind: "InferenceService"
+metadata:
+  name: csgo-match-predictor
+  namespace: default
+spec:
+  predictor:
+    sklearn:
+      storageUri: "s3://my-bucket/models/csgo-match-predictor"  # update to your MLflow artifact path
+      protocolVersion: v2

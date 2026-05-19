@@ -1,24 +1,27 @@
 # 09 — Model Monitoring
 
-Monitors the deployed model for data drift and performance degradation over time.
+Monitors the deployed model for data drift and performance degradation using Evidently.
 
 ## What it monitors
 
-- **Data drift**: distribution shift in incoming feature values vs. training baseline (e.g. Evidently or Alibi Detect)
-- **Prediction drift**: shift in the model's output distribution
-- **Performance**: rolling accuracy / AUC on labeled production data when ground truth becomes available
+| Check | Tool | Trigger |
+|-------|------|---------|
+| Feature distribution drift | Evidently `DataDriftPreset` | >20% of features drifted |
+| Data quality | Evidently `DataQualityPreset` | Missing values, type mismatches |
+| Rolling accuracy / AUC | sklearn metrics | Manual inspection |
 
 ## Inputs
 
-- Production request logs from the inference service (step 06)
-- Training baseline statistics from `data/X_train.csv`
-- Ground truth labels (delayed, once match results are known)
+- `data/X_train.csv` — training baseline (reference distribution)
+- `data/X_test.csv` — current / production data (swap with live logs in production)
+- `data/y_test.csv` — ground truth labels
+- `data/model.pkl` — model from step 03
 
 ## Outputs
 
-- Drift report (HTML or JSON)
-- Alerts if drift exceeds configured thresholds
-- Metrics pushed to Grafana / Prometheus
+- `data/reports/drift_report.html` — full Evidently HTML report
+- Console alert if drift share exceeds `DRIFT_THRESHOLD` (default 0.20)
+- Accuracy and ROC AUC printed for the current data window
 
 ## Run
 
@@ -28,3 +31,8 @@ uv run jupyter lab
 ```
 
 Open `model_monitoring.ipynb` and run all cells.
+
+## Notes
+
+- In production, replace `X_test.csv` with a rolling window of logged inference requests
+- Ground truth labels become available once match results are confirmed

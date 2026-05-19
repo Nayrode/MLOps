@@ -1,17 +1,28 @@
 # 07 — Test Inference Service
 
-Smoke-tests the deployed inference service with sample match data to verify the endpoint is healthy and returning valid predictions.
+Smoke-tests the deployed inference service with 10 sample rows from the test set.
 
 ## Inputs
 
-- Deployed inference service URL (step 06)
-- Sample rows from `data/X_test.csv`
+- Live endpoint from step 06
+- `data/X_test.csv` / `data/y_test.csv`
 
 ## What it does
 
-- Sends prediction requests to the live endpoint
-- Asserts response shape and value range (probabilities in [0, 1])
-- Compares a small batch of predictions against expected labels to catch silent regressions
+1. Samples 10 rows from `X_test`
+2. POSTs them to the inference endpoint
+3. Asserts: response has 10 predictions, all values are `0` or `1`
+4. Reports how many match expected labels
+
+## Environment
+
+Create `.env`:
+
+```
+INFERENCE_URL=http://<kserve-ingress>/v1/models/csgo-match-predictor:predict
+```
+
+Defaults to `http://localhost:8080/...` if unset (useful with port-forward).
 
 ## Run
 
@@ -21,7 +32,3 @@ uv run jupyter lab
 ```
 
 Open `test_inference_service.ipynb` and run all cells.
-
-## Notes
-
-- Set `INFERENCE_URL` in environment before running

@@ -1,10 +1,12 @@
 [project]
-name = "dvc-pull"
+name = "model-monitoring"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "dvc[s3]",
+    "evidently",
     "ipykernel",
+    "joblib",
     "pandas",
     "python-dotenv",
+    "scikit-learn",
 ]

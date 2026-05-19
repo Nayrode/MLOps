@@ -1,10 +1,7 @@
 [project]
-name = "dvc-pull"
+name = "deploy-inference-service"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "dvc[s3]",
     "ipykernel",
-    "pandas",
-    "python-dotenv",
 ]
