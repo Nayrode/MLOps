@@ -25,7 +25,7 @@ Searches for the best classifier hyperparameters using Optuna with time-series-a
 | `solver` | `lbfgs`, `liblinear` |
 | `max_iter` | 200 – 2000 (step 200) |
 
-CV strategy: `TimeSeriesSplit(n_splits=5)` — respects chronological order.  
+CV strategy: `TimeSeriesSplit(n_splits=5)` — respects chronological order.
 Objective: maximise mean ROC AUC across folds.
 
 ## Outputs
@@ -48,4 +48,4 @@ cp .env.example .env
 uv sync && uv run python hyperparameter_tuning.py
 ```
 
-Then re-run step 03.
+Then re-run step 03 to train with the optimised parameters.

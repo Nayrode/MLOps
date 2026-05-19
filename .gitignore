@@ -1,4 +1,5 @@
-08_hyperparameter_tuning/mlruns/
+# MLflow runs — generated, not useful in git
+**/mlruns/
 
 # Env files — never commit credentials
 **/.env
@@ -11,3 +12,6 @@
 
 # nbconvert temp files
 *.nbconvert.ipynb
+
+# Generated reports (large HTML files)
+data/reports/

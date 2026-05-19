@@ -9,4 +9,5 @@ dependencies = [
     "pandas",
     "python-dotenv",
     "scikit-learn",
+    "xgboost>=3.2.0",
 ]

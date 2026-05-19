@@ -18,7 +18,6 @@ Deploys the registered model as a real-time REST endpoint on Kubernetes using KS
 | File | Purpose |
 |------|---------|
 | `inference_service.yaml` | KServe manifest — update `storageUri` before applying |
-| `deploy_inference_service.ipynb` | Apply, wait, print endpoint |
 
 ## Endpoint
 
@@ -30,7 +29,8 @@ Content-Type: application/json
 
 {
   "instances": [[elo_diff, winrate_10_diff, winrate_30_diff,
-                 experience_diff, rank_diff, h2h_winrate, "_map"]]
+                 experience_diff, rank_diff, h2h_winrate,
+                 streak_diff, map_winrate_diff, "_map"]]
 }
 ```
 
@@ -41,4 +41,13 @@ Update `storageUri` in `inference_service.yaml`, then:
 ```bash
 kubectl apply -f inference_service.yaml
 kubectl get inferenceservice
+```
+
+## Alternative: local FastAPI server
+
+For local testing without Kubernetes, use `serve.py` at the repo root:
+
+```bash
+uv run python serve.py
+# POST http://localhost:8000/predict  {"team1": "NaVi", "team2": "Astralis", "map": "Dust2"}
 ```

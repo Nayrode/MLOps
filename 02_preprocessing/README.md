@@ -7,9 +7,9 @@ Produces a chronological train/test split ready for model training.
 - **`_map`**: kept as string — encoding is deferred to the sklearn Pipeline in step 03 (`OneHotEncoder`)
 - **Team names**: skipped — 1,200+ unique values, already captured by Elo/winrate features
 - **NaN handling**: none needed; dataset is fully clean (asserted at runtime)
-- **Split**: chronological 80/20 — sorts by date, no shuffling, to prevent future data leaking into training
+- **Split**: chronological 80/20 — sorted by date, no shuffling, to prevent future data leaking into training
 
-Final feature set: 7 columns (`elo_diff`, `winrate_10_diff`, `winrate_30_diff`, `experience_diff`, `rank_diff`, `h2h_winrate`, `_map`).
+Final feature set: 9 columns (`elo_diff`, `winrate_10_diff`, `winrate_30_diff`, `experience_diff`, `rank_diff`, `h2h_winrate`, `streak_diff`, `map_winrate_diff`, `_map`).
 
 ## Inputs
 
@@ -18,7 +18,7 @@ Final feature set: 7 columns (`elo_diff`, `winrate_10_diff`, `winrate_30_diff`, 
 ## Outputs
 
 | File | Rows | Description |
-|---|---|---|
+|------|------|-------------|
 | `data/X_train.csv` | 36,618 | Features — train (up to 2019-05-22) |
 | `data/X_test.csv` | 9,155 | Features — test (from 2019-05-22) |
 | `data/y_train.csv` | 36,618 | Target — train |

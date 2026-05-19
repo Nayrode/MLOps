@@ -11,6 +11,8 @@ preprocessing:
     - experience_diff
     - rank_diff
     - h2h_winrate
+    - streak_diff
+    - map_winrate_diff
 
 model:
   type: xgboost

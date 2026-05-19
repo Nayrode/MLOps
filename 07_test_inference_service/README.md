@@ -28,3 +28,14 @@ Defaults to `http://localhost:8080/...` if unset (useful with port-forward).
 cp .env.example .env
 uv sync && uv run python test_inference_service.py
 ```
+
+## Local testing (no Kubernetes)
+
+Start the FastAPI server from the repo root, then test it directly:
+
+```bash
+uv run python serve.py &
+curl -s -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"team1": "NaVi", "team2": "Astralis", "map": "Dust2"}'
+```

@@ -7,7 +7,6 @@ Monitors the deployed model for data drift and performance degradation using Evi
 | Check | Tool | Trigger |
 |-------|------|---------|
 | Feature distribution drift | Evidently `DataDriftPreset` | >20% of features drifted |
-| Data quality | Evidently `DataQualityPreset` | Missing values, type mismatches |
 | Rolling accuracy / AUC | sklearn metrics | Manual inspection |
 
 ## Inputs
@@ -33,4 +32,5 @@ uv sync && uv run python model_monitoring.py
 
 - In production, replace `X_test.csv` with a rolling window of logged inference requests
 - Ground truth labels become available once match results are confirmed
-- `_map` is a string column in `X_train` / `X_test` — Evidently handles it as categorical
+- `_map` is a string column — Evidently handles it as categorical
+- Current model performance: accuracy 0.8043, ROC AUC 0.8915

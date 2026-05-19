@@ -20,6 +20,7 @@ EXPERIMENT_NAME     = os.environ.get("MLFLOW_EXPERIMENT", "csgo-match-predictor"
 NUMERIC_COLS = [
     "elo_diff", "winrate_10_diff", "winrate_30_diff",
     "experience_diff", "rank_diff", "h2h_winrate",
+    "streak_diff", "map_winrate_diff",
 ]
 
 best_params_path = DATA_DIR / "best_params.json"

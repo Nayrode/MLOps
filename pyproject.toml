@@ -3,7 +3,10 @@ name = "mlops"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.136.1",
     "joblib",
     "pandas",
     "scikit-learn",
+    "uvicorn>=0.47.0",
+    "xgboost>=3.2.0",
 ]

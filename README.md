@@ -1,37 +1,44 @@
 # CS:GO Match Outcome Prediction — MLOps Pipeline
 
-End-to-end MLOps pipeline for predicting the winner of professional CS:GO matches. Covers data versioning, feature engineering, model training on Kubernetes, evaluation, deployment, and production monitoring.
+End-to-end MLOps pipeline for predicting the winner of professional CS:GO matches. Covers feature engineering, model training, evaluation, deployment, and production monitoring.
 
 ## Pipeline
 
 ```
-00_dvc_pull → 01_feature_engineering → 02_preprocessing → 08_hyperparameter_tuning
-                                                                    ↓
-                                               03_train_model_kubernetes
-                                                                    ↓
-                                                     04_evaluate_model
-                                                                    ↓
-                                                      05_upload_model
-                                                                    ↓
-                                               06_deploy_inference_service
-                                                                    ↓
-                                               07_test_inference_service
-                                                                    ↓
-                                                    09_model_monitoring
+01_feature_engineering → 02_preprocessing → 08_hyperparameter_tuning (optional)
+                                                        ↓
+                                         03_train_model_kubernetes
+                                                        ↓
+                                              04_evaluate_model
+                                                        ↓
+                                               05_upload_model
+                                                        ↓
+                                        06_deploy_inference_service
+                                                        ↓
+                                        07_test_inference_service
+                                                        ↓
+                                             09_model_monitoring
 ```
 
 | Step | Folder | What it does |
 |------|--------|--------------|
-| 00 | `00_dvc_pull` | Pull raw match data from S3 via DVC |
-| 01 | `01_feature_engineering` | Build Elo, win rate, H2H features from match history |
+| 01 | `01_feature_engineering` | Build Elo, win rate, H2H, streak, map win rate features |
 | 02 | `02_preprocessing` | Chronological train/test split |
 | 03 | `03_train_model_kubernetes` | Train Pipeline (scaler + encoder + classifier) as a Kubernetes Job |
 | 04 | `04_evaluate_model` | Evaluate on held-out test set, log metrics to MLflow |
 | 05 | `05_upload_model` | Register model in MLflow Model Registry |
 | 06 | `06_deploy_inference_service` | Deploy as KServe `InferenceService` on Kubernetes |
 | 07 | `07_test_inference_service` | Smoke-test the live REST endpoint |
-| 08 | `08_hyperparameter_tunning` | Optuna search with `TimeSeriesSplit` CV, logged to MLflow |
+| 08 | `08_hyperparameter_tuning` | Optuna search with `TimeSeriesSplit` CV, logged to MLflow |
 | 09 | `09_model_monitoring` | Drift detection and rolling performance tracking |
+
+---
+
+## Quick inference
+
+```bash
+uv run python predict.py --team1 NaVi --team2 Astralis --map Dust2
+```
 
 ---
 
@@ -41,21 +48,7 @@ End-to-end MLOps pipeline for predicting the winner of professional CS:GO matche
 
 - Python 3.11+
 - [uv](https://github.com/astral-sh/uv) — `pip install uv`
-- DVC — `pip install dvc`
 - Docker + kubectl (steps 03+ in Kubernetes mode)
-
-
----
-
-### Step 00 — Pull data
-
-```bash
-cd 00_dvc_pull
-cp .env.example .env          # fill in DVC_S3_ACCESS_KEY and DVC_S3_SECRET_KEY
-uv sync && uv run python dvc_pull.py
-```
-
-Output: `data/results.csv`
 
 ---
 
@@ -84,7 +77,7 @@ Output: `data/X_train.csv`, `data/X_test.csv`, `data/y_train.csv`, `data/y_test.
 ### Step 08 — Hyperparameter tuning _(optional, run before step 03)_
 
 ```bash
-cd 08_hyperparameter_tunning
+cd 08_hyperparameter_tuning
 uv sync && uv run python hyperparameter_tuning.py
 ```
 
@@ -94,27 +87,21 @@ Output: `data/best_params.json`
 
 ### Step 03 — Train model
 
-**Local mode** (fastest):
+**Local mode:**
 
 ```bash
 cd 03_train_model_kubernetes
 uv sync
-DATA_DIR=$(pwd)/../data MODEL_DIR=$(pwd)/../data uv run python train.py
+DATA_DIR=$(pwd)/../data MODEL_DIR=$(pwd)/../data MODEL_TYPE=xgboost uv run python train.py
 ```
 
 **Kubernetes mode:**
 
 ```bash
 cd 03_train_model_kubernetes
-
-# 1. Build and push the Docker image
 docker build -t YOUR_REGISTRY/csgo-trainer:latest .
 docker push YOUR_REGISTRY/csgo-trainer:latest
-
-# 2. Update image name in job.yaml, then submit
 kubectl apply -f job.yaml
-
-# 3. Stream logs
 kubectl logs -f job/csgo-train-job
 ```
 
@@ -140,15 +127,12 @@ cd 05_upload_model
 uv sync && uv run python upload_model.py
 ```
 
-Registers `csgo-match-predictor` in MLflow. Promoted to `Staging` if accuracy ≥ 0.60.
-
 ---
 
 ### Step 06 — Deploy inference service
 
 ```bash
 cd 06_deploy_inference_service
-# Edit storageUri in inference_service.yaml first
 kubectl apply -f inference_service.yaml
 kubectl get inferenceservice
 ```
@@ -159,7 +143,7 @@ kubectl get inferenceservice
 
 ```bash
 cd 07_test_inference_service
-cp .env.example .env          # set INFERENCE_URL
+cp .env.example .env   # set INFERENCE_URL
 uv sync && uv run python test_inference_service.py
 ```
 
@@ -182,13 +166,6 @@ Run the full pipeline in one command — DVC skips stages whose inputs haven't c
 dvc repro
 ```
 
-Run a specific stage only:
-
-```bash
-dvc repro preprocessing
-dvc repro train
-```
-
 Force re-run everything:
 
 ```bash
@@ -199,12 +176,12 @@ dvc repro --force
 
 ## Dataset
 
-Source: HLTV professional CS:GO match results (2015-11-03 → 2020-03-18).
+Source: HLTV professional CS:GO match results (2015-11-03 → 2020-03-18). Data is git-tracked.
 
 | File | Rows | Description |
 |------|------|-------------|
 | `data/results.csv` | 45,773 | Raw match results |
-| `data/df_featured.csv` | 45,773 | + 6 engineered features |
+| `data/df_featured.csv` | 45,773 | + 9 engineered features + target |
 | `data/X_train.csv` | 36,618 | Train features (up to 2019-05-22) |
 | `data/X_test.csv` | 9,155 | Test features (from 2019-05-22) |
 | `data/y_train.csv` | 36,618 | Train target |
@@ -224,9 +201,12 @@ Source: HLTV professional CS:GO match results (2015-11-03 → 2020-03-18).
 | `experience_diff` | Total matches played difference |
 | `rank_diff` | HLTV rank difference (team_1 − team_2) |
 | `h2h_winrate` | Head-to-head win rate for team_1 vs team_2 |
+| `streak_diff` | Current win/loss streak difference (e.g. +3 = team_1 on 3-win streak) |
+| `map_winrate_diff` | Win rate difference specifically on the played map |
 | `_map` | Map name — one-hot encoded inside the sklearn Pipeline |
 
-Features are computed strictly from data **prior to each match** to prevent leakage. Scaling (`StandardScaler`) and map encoding (`OneHotEncoder`) happen inside the trained `Pipeline` object — `data/model.pkl` contains the full inference chain.
+Features are computed strictly from data **prior to each match** to prevent leakage.
+Scaling and map encoding happen inside `model.pkl` — the full inference chain is self-contained.
 
 ---
 
@@ -234,12 +214,12 @@ Features are computed strictly from data **prior to each match** to prevent leak
 
 `sklearn.pipeline.Pipeline`:
 1. `ColumnTransformer` — `StandardScaler` on numeric cols, `OneHotEncoder` on `_map`
-2. `LogisticRegression` — hyperparameters from `data/best_params.json`
+2. `XGBClassifier` (default) or `LogisticRegression` — switch via `MODEL_TYPE` env var
 
-| Metric | Value |
-|--------|-------|
-| Train accuracy | 0.7406 |
-| Test accuracy | 0.7689 |
+| Metric | XGBoost | LogReg |
+|--------|---------|--------|
+| Test accuracy | **0.8043** | 0.769 |
+| ROC AUC | **0.8915** | 0.851 |
 
 ---
 
@@ -250,17 +230,18 @@ Features are computed strictly from data **prior to each match** to prevent leak
 ├── data/                          # datasets + model (git-tracked)
 ├── params.yaml                    # pipeline hyperparameters
 ├── dvc.yaml                       # DVC pipeline DAG
-├── 00_dvc_pull/
+├── predict.py                     # CLI inference: --team1 X --team2 Y --map Z
+├── serve.py                       # FastAPI REST API (for KServe deployment)
 ├── 01_feature_engineering/
 ├── 02_preprocessing/
 ├── 03_train_model_kubernetes/
-│   ├── train.py                   # training script (container entrypoint)
+│   ├── train.py
 │   ├── Dockerfile
 │   └── job.yaml
 ├── 04_evaluate_model/
 ├── 05_upload_model/
 ├── 06_deploy_inference_service/
 ├── 07_test_inference_service/
-├── 08_hyperparameter_tunning/
+├── 08_hyperparameter_tuning/
 └── 09_model_monitoring/
 ```

@@ -1,0 +1,110 @@
+schema: '2.0'
+stages:
+  feature_engineering:
+    cmd: cd 01_feature_engineering && uv run python feature_engineering.py
+    deps:
+    - path: 01_feature_engineering/feature_engineering.py
+      hash: md5
+      md5: a7e0c994c9cdfc20bbf294a75ff15d17
+      size: 4432
+    - path: data/results.csv
+      hash: md5
+      md5: 8ee1aeec47c4af5b33c0b7541de544ed
+      size: 3883149
+    params:
+      params.yaml:
+        feature_engineering:
+          base_elo: 1500
+          k: 32
+  preprocessing:
+    cmd: cd 02_preprocessing && uv run python preprocessing.py
+    deps:
+    - path: 02_preprocessing/preprocessing.py
+      hash: md5
+      md5: fb734df081d5df3e9cc23dfadf1ce522
+      size: 1483
+    - path: data/df_featured.csv
+      hash: md5
+      md5: 2b0c11129cc685f95845c1bf5498107a
+      size: 7729857
+    params:
+      params.yaml:
+        preprocessing:
+          train_ratio: 0.8
+          numeric_cols:
+          - elo_diff
+          - winrate_10_diff
+          - winrate_30_diff
+          - experience_diff
+          - rank_diff
+          - h2h_winrate
+          - streak_diff
+          - map_winrate_diff
+  train:
+    cmd: cd 03_train_model_kubernetes && DATA_DIR=$(pwd)/../data 
+      MODEL_DIR=$(pwd)/../data MODEL_TYPE=xgboost uv run python train.py
+    deps:
+    - path: 03_train_model_kubernetes/train.py
+      hash: md5
+      md5: 7f8ee38504b610dd3d17ac9615cc2341
+      size: 2951
+    - path: data/X_train.csv
+      hash: md5
+      md5: efc6dd6b46a77ec1a00cafa1ae88da35
+      size: 3351753
+    - path: data/best_params.json
+      hash: md5
+      md5: babd8c7472b7a1864989263baabe8982
+      size: 136
+    - path: data/y_train.csv
+      hash: md5
+      md5: ac6b7aaef2d180b4719bcf8df4b6f6c8
+      size: 281847
+    params:
+      params.yaml:
+        model:
+          type: xgboost
+          accuracy_threshold: 0.6
+          drift_threshold: 0.2
+  evaluate:
+    cmd: cd 04_evaluate_model && uv run python evaluate_model.py
+    deps:
+    - path: 04_evaluate_model/evaluate_model.py
+      hash: md5
+      md5: 180cbbbc695ee55fbe0d17a132c03c68
+      size: 1840
+    - path: data/X_test.csv
+      hash: md5
+      md5: bc1d7f9749a120015f4cae7e103acc24
+      size: 786565
+    - path: data/model.pkl
+      hash: md5
+      md5: 22c484e4840a2c96e15dbe769920db99
+      size: 1090618
+    - path: data/y_test.csv
+      hash: md5
+      md5: c4b00a8a588c48918edd0eb395cd035f
+      size: 73253
+  monitoring:
+    cmd: cd 09_model_monitoring && uv run python model_monitoring.py
+    deps:
+    - path: 09_model_monitoring/model_monitoring.py
+      hash: md5
+      md5: 8dd2e5ab4cd82a9958f2cd9ce8d86d61
+      size: 1756
+    - path: data/X_test.csv
+      hash: md5
+      md5: bc1d7f9749a120015f4cae7e103acc24
+      size: 786565
+    - path: data/X_train.csv
+      hash: md5
+      md5: efc6dd6b46a77ec1a00cafa1ae88da35
+      size: 3351753
+    - path: data/model.pkl
+      hash: md5
+      md5: 22c484e4840a2c96e15dbe769920db99
+      size: 1090618
+    - path: data/y_test.csv
+      hash: md5
+      md5: c4b00a8a588c48918edd0eb395cd035f
+      size: 73253

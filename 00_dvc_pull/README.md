@@ -1,11 +1,11 @@
 # 00 — DVC Pull
 
-Pulls the versioned dataset from a remote GitHub repo + S3 backend using `dvc.api.DVCFileSystem`. No local DVC config needed — credentials are passed at runtime via a `.env` file.
+Pulls the versioned dataset from a DVC remote. Data is currently git-tracked so this step is optional — `data/results.csv` is already present in the repository.
 
 ## Inputs
 
-- GitHub repo `Nayrode/MLOps.git` at git ref `cap4`
-- `DVC_S3_ACCESS_KEY` and `DVC_S3_SECRET_KEY` in `.env`
+- DVC remote configured in `.dvc/config`
+- `DVC_S3_ACCESS_KEY` / `DVC_S3_SECRET_KEY` in `.env` (only needed if using an S3 remote)
 
 ## Outputs
 
@@ -14,19 +14,15 @@ Pulls the versioned dataset from a remote GitHub repo + S3 backend using `dvc.ap
 ## Run
 
 ```bash
+# If data is git-tracked (default):
+git pull   # results.csv comes with the repo
+
+# If using a DVC remote:
 cp .env.example .env   # fill in credentials
 uv sync && uv run python dvc_pull.py
 ```
 
-## Environment
-
-```
-DVC_S3_ACCESS_KEY=...
-DVC_S3_SECRET_KEY=...
-```
-
 ## Dependencies
 
-- `dvc[s3]` — DVC with S3 remote support
+- `dvc` — pipeline orchestration and optional remote storage
 - `python-dotenv` — loads `.env` into environment variables
-- `pandas` — reads and saves the CSV

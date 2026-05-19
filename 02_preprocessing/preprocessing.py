@@ -8,6 +8,7 @@ OUTPUT_DIR = Path("../data")
 NUMERIC_FEATURE_COLS = [
     "elo_diff", "winrate_10_diff", "winrate_30_diff",
     "experience_diff", "rank_diff", "h2h_winrate",
+    "streak_diff", "map_winrate_diff",
 ]
 FEATURE_COLS = NUMERIC_FEATURE_COLS + ["_map"]
 TARGET_COL = "team_1_wins"

@@ -8,13 +8,12 @@ Evaluates the trained model on the held-out test set, logs metrics to MLflow, an
 - `data/X_test.csv`
 - `data/y_test.csv`
 
-## Metrics
+## Metrics (current model)
 
-| Metric | Description |
-|--------|-------------|
-| Accuracy | Share of correctly predicted match outcomes |
-| ROC AUC | Area under the ROC curve |
-| Precision / Recall / F1 | Per-class breakdown |
+| Metric | Value |
+|--------|-------|
+| Accuracy | 0.8043 |
+| ROC AUC | 0.8915 |
 
 ## Outputs
 

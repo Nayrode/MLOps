@@ -7,8 +7,6 @@ stages:
     params:
       - params.yaml:
           - feature_engineering
-    outs:
-      - data/df_featured.csv
 
   preprocessing:
     cmd: cd 02_preprocessing && uv run python preprocessing.py
@@ -18,14 +16,9 @@ stages:
     params:
       - params.yaml:
           - preprocessing
-    outs:
-      - data/X_train.csv
-      - data/X_test.csv
-      - data/y_train.csv
-      - data/y_test.csv
 
   train:
-    cmd: cd 03_train_model_kubernetes && DATA_DIR=$(pwd)/../data MODEL_DIR=$(pwd)/../data uv run python train.py
+    cmd: cd 03_train_model_kubernetes && DATA_DIR=$(pwd)/../data MODEL_DIR=$(pwd)/../data MODEL_TYPE=xgboost uv run python train.py
     deps:
       - 03_train_model_kubernetes/train.py
       - data/X_train.csv
@@ -34,5 +27,20 @@ stages:
     params:
       - params.yaml:
           - model
-    outs:
+
+  evaluate:
+    cmd: cd 04_evaluate_model && uv run python evaluate_model.py
+    deps:
+      - 04_evaluate_model/evaluate_model.py
       - data/model.pkl
+      - data/X_test.csv
+      - data/y_test.csv
+
+  monitoring:
+    cmd: cd 09_model_monitoring && uv run python model_monitoring.py
+    deps:
+      - 09_model_monitoring/model_monitoring.py
+      - data/model.pkl
+      - data/X_train.csv
+      - data/X_test.csv
+      - data/y_test.csv

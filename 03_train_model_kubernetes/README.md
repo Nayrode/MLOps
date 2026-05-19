@@ -4,11 +4,11 @@ Trains a full sklearn `Pipeline` (StandardScaler + OneHotEncoder + classifier) o
 
 ## Model
 
-Default: `XGBClassifier` — accuracy 78.1%, AUC 0.867.  
-Alternative: `LogisticRegression` — accuracy 76.9%, AUC 0.851.
+Default: `XGBClassifier` — test accuracy 80.4%, ROC AUC 0.8915.
+Alternative: `LogisticRegression` — test accuracy 76.9%, ROC AUC 0.851.
 
-Switch via `MODEL_TYPE` env var (`xgboost` or `logreg`).  
-If `data/best_params.json` exists (from step 08) and matches the model type, those params take priority.
+Switch via `MODEL_TYPE` env var (`xgboost` or `logreg`).
+If `data/best_params.json` exists (from step 08) and its `model_type` matches, those params take priority.
 
 ## Inputs
 
@@ -27,8 +27,7 @@ If `data/best_params.json` exists (from step 08) and matches the model type, tho
 |------|---------|
 | `train.py` | Training script (container entrypoint) |
 | `Dockerfile` | Builds the training image |
-| `job.yaml` | Kubernetes Job + ConfigMap |
-| `train_model_kubernetes.ipynb` | Orchestration: local → build → push → submit → monitor |
+| `job.yaml` | Kubernetes Job manifest |
 
 ## Run
 
