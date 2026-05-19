@@ -26,33 +26,13 @@ curl -s -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d '{"team1": "NaVi", "team2": "Astralis", "map": "Dust2"}'
 
-# Full pipeline (skips unchanged stages)
+# Full pipeline locally (skips unchanged stages)
 dvc repro
 ```
 
 ---
 
-## Pipeline
-
-```
-01_feature_engineering
-        ↓
-02_preprocessing
-        ↓
-08_hyperparameter_tuning  ← optional, run before 03
-        ↓
-03_train_model_kubernetes
-        ↓
-04_evaluate_model
-        ↓
-05_upload_model  (MLflow registry)
-        ↓
-06_deploy_inference_service  (KServe)
-        ↓
-07_test_inference_service
-        ↓
-09_model_monitoring
-```
+## Pipeline steps
 
 | Step | What it does |
 |------|--------------|
@@ -68,160 +48,110 @@ dvc repro
 
 ---
 
-## Run locally (step by step)
+## Run locally
 
 ### Prerequisites
 
 - Python 3.11+ and [uv](https://github.com/astral-sh/uv): `pip install uv`
-- Docker + kubectl for Kubernetes steps
 
-### Step 01 — Feature engineering
+### Option A — One command (DVC)
 
-```bash
-cd 01_feature_engineering && uv sync && uv run python feature_engineering.py
-```
-
-Reads `data/results.csv`, iterates matches chronologically, builds state (Elo, histories),
-computes 8 features per match. Writes `data/df_featured.csv`.
-
-### Step 02 — Preprocessing
-
-```bash
-cd 02_preprocessing && uv sync && uv run python preprocessing.py
-```
-
-Sorts by date, splits 80/20 without shuffling. Writes `X_train`, `X_test`, `y_train`, `y_test`.  
-`_map` stays as a string — the sklearn Pipeline in step 03 encodes it.
-
-### Step 08 — Hyperparameter tuning _(optional, before step 03)_
-
-```bash
-cd 08_hyperparameter_tuning && uv sync && uv run python hyperparameter_tuning.py
-```
-
-Writes `data/best_params.json`. Step 03 picks it up automatically if `model_type` matches.
-
-### Step 03 — Train
-
-```bash
-cd 03_train_model_kubernetes && uv sync
-DATA_DIR=$(pwd)/../data MODEL_DIR=$(pwd)/../data MODEL_TYPE=xgboost uv run python train.py
-```
-
-Fits the full Pipeline on `X_train`. Writes `data/model.pkl` — the serialised Pipeline
-contains the scaler, encoder, and classifier. No separate transform step needed at inference.
-
-### Step 04 — Evaluate
-
-```bash
-cd 04_evaluate_model && uv sync && uv run python evaluate_model.py
-```
-
-Loads `model.pkl` + `X_test`/`y_test`. Prints accuracy and AUC, saves `evaluation.json`
-and `confusion_matrix.png`, logs everything to MLflow.
-
-### Step 05 — Upload model
-
-```bash
-cd 05_upload_model && uv sync && uv run python upload_model.py
-```
-
-### Step 06 — Deploy inference service
-
-```bash
-cd 06_deploy_inference_service
-kubectl apply -f inference_service.yaml && kubectl get inferenceservice
-```
-
-### Step 07 — Test inference service
-
-```bash
-cd 07_test_inference_service
-cp .env.example .env  # set INFERENCE_URL
-uv sync && uv run python test_inference_service.py
-```
-
-### Step 09 — Model monitoring
-
-```bash
-cd 09_model_monitoring && uv sync && uv run python model_monitoring.py
-```
-
-Compares feature distributions between train (reference) and test (current) with Evidently.
-Alerts if more than 20% of features have drifted. Also prints rolling accuracy + AUC.
-
----
-
-## Run with DVC
-
-DVC tracks checksums of every input file and parameter. It only re-runs a stage if
-something it depends on has changed.
+DVC runs only stages whose inputs changed:
 
 ```bash
 dvc repro           # run only what changed
 dvc repro --force   # re-run everything
 ```
 
-Stages mirror the pipeline above: `feature_engineering → preprocessing → train → evaluate → monitoring`.  
-Config is in `dvc.yaml`; hyperparameters are in `params.yaml`.
+### Option B — Step by step
+
+```bash
+# 1. Feature engineering — builds 8 features per match from historical state
+cd 01_feature_engineering && uv sync && uv run python feature_engineering.py
+# → data/df_featured.csv
+
+# 2. Preprocessing — chronological 80/20 split, no shuffle
+cd 02_preprocessing && uv sync && uv run python preprocessing.py
+# → data/X_train.csv, X_test.csv, y_train.csv, y_test.csv
+
+# (optional) Hyperparameter tuning — run before step 3
+cd 08_hyperparameter_tuning && uv sync && uv run python hyperparameter_tuning.py
+# → data/best_params.json  (picked up automatically by train.py)
+
+# 3. Train — fits StandardScaler + OneHotEncoder + XGBoost in one Pipeline
+cd 03_train_model_kubernetes && uv sync
+DATA_DIR=$(pwd)/../data MODEL_DIR=$(pwd)/../data MODEL_TYPE=xgboost uv run python train.py
+# → data/model.pkl
+
+# 4. Evaluate
+cd 04_evaluate_model && uv sync && uv run python evaluate_model.py
+# → data/evaluation.json, data/confusion_matrix.png
+
+# 5. Upload to MLflow registry
+cd 05_upload_model && uv sync && uv run python upload_model.py
+
+# 6. Deploy on Kubernetes (KServe)
+kubectl apply -f 06_deploy_inference_service/inference_service.yaml
+
+# 7. Test the live endpoint
+cd 07_test_inference_service
+cp .env.example .env  # set INFERENCE_URL
+uv sync && uv run python test_inference_service.py
+
+# 9. Monitoring — drift detection + rolling accuracy
+cd 09_model_monitoring && uv sync && uv run python model_monitoring.py
+```
 
 ---
 
 ## Run on Kubeflow
 
-Each step runs as an isolated Pod on Kubernetes, reading and writing to a shared PVC.
-`pipeline.py` defines the DAG using the KFP v2 SDK.
+No Docker build required. The pipeline runs using `python:3.11-slim` as base image and installs
+packages at runtime. `results.csv` is downloaded from GitHub by the first step.
+Intermediate files (CSVs, model) are shared between steps via a PVC.
 
-### 1 — Install Kubeflow Pipelines
-
-```bash
-kubectl apply -k "github.com/kubeflow/pipelines/manifests/kustomize/cluster-scoped-resources?ref=2.2.0"
-kubectl apply -k "github.com/kubeflow/pipelines/manifests/kustomize/env/platform-agnostic?ref=2.2.0"
-# UI available at:
-kubectl port-forward -n kubeflow svc/ml-pipeline-ui 3000:80
-```
-
-### 2 — Build and push the Docker image
-
-```bash
-docker build -t YOUR_REGISTRY/csgo-mlops:latest .
-docker push YOUR_REGISTRY/csgo-mlops:latest
-```
-
-Then update `IMAGE` in `pipeline.py`.
-
-### 3 — Create the shared volume and load data
+### 1 — Create the shared volume
 
 ```bash
 kubectl apply -f pvc.yaml
-# Copy raw data onto the PVC (one-time)
-kubectl cp data/results.csv kubeflow/<init-pod>:/data/results.csv
 ```
 
-### 4 — Compile and submit
+This creates a 2Gi `ReadWriteMany` PVC named `csgo-data-pvc` in the `kubeflow-user-example-com`
+namespace, using the `nfs-rwx` storage class. All pipeline Pods mount it at `/data`.
+
+### 2 — Compile the pipeline
 
 ```bash
-pip install kfp
-python pipeline.py          # compiles → pipeline.yaml
-python pipeline.py --run    # compiles + submits to KFP at localhost:3000
+uv run python pipeline.py
+# → pipeline.yaml
 ```
 
-The pipeline appears in the Kubeflow UI. Each box in the DAG is a Pod running one step.
-Steps share data through the PVC (`/data` inside each container = `data/` locally).
+### 3 — Upload and run
 
-### How `pipeline.py` maps to the scripts
-
-```
-KFP Component          Docker command
-─────────────────────────────────────────────────────────────────────
-feature-engineering  → python 01_feature_engineering/feature_engineering.py
-preprocessing        → python 02_preprocessing/preprocessing.py
-train                → DATA_DIR=/data MODEL_TYPE=xgboost python 03_train_model_kubernetes/train.py
-evaluate             → python 04_evaluate_model/evaluate_model.py
-monitoring           → python 09_model_monitoring/model_monitoring.py
+```bash
+kubectl port-forward svc/ml-pipeline-ui 3000:80 -n kubeflow
 ```
 
-No code changes needed in the scripts — they already read/write from `DATA_DIR`.
+Open `http://localhost:3000`, then:
+
+- **Pipelines** → **Upload pipeline** → select `pipeline.yaml`
+- **Create run** → leave default parameters → **Start**
+
+### What each step does on the cluster
+
+```
+feature-engineering   downloads results.csv from GitHub → computes 8 features → writes df_featured.csv to PVC
+preprocessing         reads df_featured.csv from PVC → 80/20 split → writes X_train, X_test, y_train, y_test
+train                 reads X_train from PVC → fits XGBoost Pipeline → writes model.pkl to PVC
+evaluate              reads model.pkl + X_test from PVC → prints accuracy & AUC → writes evaluation.json
+```
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `model_type` | `xgboost` | `xgboost` or `logreg` |
+| `train_ratio` | `0.8` | Train/test split ratio |
 
 ---
 
@@ -233,21 +163,18 @@ No code changes needed in the scripts — they already read/write from `DATA_DIR
 uv run python predict.py --team1 NaVi --team2 Astralis --map Dust2
 ```
 
-Replays all 45,773 matches to build current team states, then predicts.  
-~1–2s (state is rebuilt from scratch each call).
+Replays all 45,773 matches to build current team states, then predicts. ~1–2s.
 
 ### REST API
 
 ```bash
-uv run python serve.py   # state built once at startup, then served in-memory
+uv run python serve.py   # state built once at startup, served in-memory
 ```
 
 ```
 POST /predict   {"team1": "NaVi", "team2": "Astralis", "map": "Dust2"}
 GET  /health    {"status": "ok", "teams_in_history": 1554}
 ```
-
-`serve.py` is the container image for a KServe `InferenceService` in production.
 
 ---
 
@@ -268,7 +195,7 @@ Source: HLTV professional CS:GO match results (2015-11-03 → 2020-03-18). Git-t
 
 ## Features
 
-All features are differences (team_1 − team_2) and are computed **before** each match is processed.
+All features are differences (team_1 − team_2), computed **before** each match to prevent leakage.
 
 | Feature | Description |
 |---------|-------------|
@@ -290,8 +217,8 @@ All features are differences (team_1 − team_2) and are computed **before** eac
 
 ```
 ColumnTransformer
-  ├── StandardScaler       → 8 numeric features
-  └── OneHotEncoder        → _map (10 possible values)
+  ├── StandardScaler    → 8 numeric features
+  └── OneHotEncoder     → _map (10 possible values)
         ↓
   XGBClassifier (n_estimators=300, learning_rate=0.05, max_depth=6)
 ```
@@ -301,28 +228,26 @@ ColumnTransformer
 | Test accuracy | **0.8043** | 0.769 |
 | ROC AUC | **0.8915** | 0.851 |
 
-Switch model: `MODEL_TYPE=logreg uv run python train.py`
-
 ---
 
 ## Repository layout
 
 ```
 .
-├── data/                            # datasets + model (git-tracked)
-├── params.yaml                      # pipeline hyperparameters (DVC reads this)
-├── dvc.yaml                         # DVC pipeline DAG
-├── pipeline.py                      # Kubeflow Pipelines v2 DAG
-├── pvc.yaml                         # Kubernetes PersistentVolumeClaim for KFP
-├── Dockerfile                       # single image for all pipeline steps
-├── predict.py                       # CLI: --team1 X --team2 Y --map Z
-├── serve.py                         # FastAPI REST API (KServe image)
+├── data/                          # datasets + model (git-tracked)
+├── params.yaml                    # DVC pipeline hyperparameters
+├── dvc.yaml                       # DVC pipeline DAG (local runs)
+├── pipeline.py                    # Kubeflow Pipelines v2 DAG
+├── pipeline.yaml                  # compiled KFP pipeline — upload this to the UI
+├── pvc.yaml                       # Kubernetes PVC for inter-step data sharing
+├── predict.py                     # CLI inference: --team1 X --team2 Y --map Z
+├── serve.py                       # FastAPI REST API
+├── Dockerfile                     # image for all steps (optional, not needed for KFP)
 ├── 01_feature_engineering/
 ├── 02_preprocessing/
 ├── 03_train_model_kubernetes/
 │   ├── train.py
-│   ├── Dockerfile                   # step-specific image (legacy, use root Dockerfile)
-│   └── job.yaml                     # standalone Kubernetes Job (without KFP)
+│   └── job.yaml                   # standalone Kubernetes Job (without KFP)
 ├── 04_evaluate_model/
 ├── 05_upload_model/
 ├── 06_deploy_inference_service/
