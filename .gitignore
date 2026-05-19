@@ -1,1 +1,10 @@
 08_hyperparameter_tuning/mlruns/
+
+# Env files — never commit credentials
+**/.env
+.env
+
+# Python
+**/.venv/
+**/__pycache__/
+*.pyc

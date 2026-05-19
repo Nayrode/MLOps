@@ -1,0 +1,46 @@
+stages:
+  feature_engineering:
+    cmd: >
+      cd 01_feature_engineering &&
+      uv run jupyter nbconvert --to notebook --execute feature_engineering.ipynb
+      --output feature_engineering.ipynb --ExecutePreprocessor.kernel_name=feature-engineering
+    deps:
+      - 01_feature_engineering/feature_engineering.ipynb
+      - data/results.csv
+    params:
+      - params.yaml:
+          - feature_engineering
+    outs:
+      - data/df_featured.csv
+
+  preprocessing:
+    cmd: >
+      cd 02_preprocessing &&
+      uv run jupyter nbconvert --to notebook --execute preprocessing.ipynb
+      --output preprocessing.ipynb --ExecutePreprocessor.kernel_name=preprocessing
+    deps:
+      - 02_preprocessing/preprocessing.ipynb
+      - data/df_featured.csv
+    params:
+      - params.yaml:
+          - preprocessing
+    outs:
+      - data/X_train.csv
+      - data/X_test.csv
+      - data/y_train.csv
+      - data/y_test.csv
+
+  train:
+    cmd: >
+      cd 03_train_model_kubernetes &&
+      DATA_DIR=$(pwd)/../data MODEL_DIR=$(pwd)/../data uv run python train.py
+    deps:
+      - 03_train_model_kubernetes/train.py
+      - data/X_train.csv
+      - data/y_train.csv
+      - data/best_params.json
+    params:
+      - params.yaml:
+          - model
+    outs:
+      - data/model.pkl

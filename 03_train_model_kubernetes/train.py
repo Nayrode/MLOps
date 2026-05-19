@@ -4,49 +4,59 @@ import json
 import os
 
 import joblib
-import mlflow
-import mlflow.sklearn
 import pandas as pd
+from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 DATA_DIR  = Path(os.environ.get("DATA_DIR", "/data"))
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", "/model"))
-MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow-service:5000")
+MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "")
 EXPERIMENT_NAME     = os.environ.get("MLFLOW_EXPERIMENT", "csgo-match-predictor")
-C        = float(os.environ.get("C", "1.0"))
-MAX_ITER = int(os.environ.get("MAX_ITER", "1000"))
-SOLVER   = os.environ.get("SOLVER", "lbfgs")
 
-# Override with best params from step 08 if present
+NUMERIC_COLS = [
+    "elo_diff", "winrate_10_diff", "winrate_30_diff",
+    "experience_diff", "rank_diff", "h2h_winrate",
+]
+
 best_params_path = DATA_DIR / "best_params.json"
 if best_params_path.exists():
     with open(best_params_path) as f:
-        best = json.load(f)["params"]
-    C        = float(best.get("C", C))
-    MAX_ITER = int(best.get("max_iter", MAX_ITER))
-    SOLVER   = best.get("solver", SOLVER)
-    print(f"Loaded best params: C={C}, max_iter={MAX_ITER}, solver={SOLVER}")
-
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-mlflow.set_experiment(EXPERIMENT_NAME)
+        params = json.load(f)["params"]
+    print(f"Loaded best params: {params}")
+else:
+    params = {"C": 1.0, "max_iter": 1000, "solver": "lbfgs"}
+    print(f"No best_params.json — using defaults: {params}")
 
 X_train = pd.read_csv(DATA_DIR / "X_train.csv", index_col=0)
 y_train = pd.read_csv(DATA_DIR / "y_train.csv", index_col=0).squeeze()
 print(f"Loaded {len(X_train)} rows, {X_train.shape[1]} features")
 
-with mlflow.start_run(run_name="train") as run:
-    mlflow.log_params({"C": C, "max_iter": MAX_ITER, "solver": SOLVER, "model": "LogisticRegression"})
+pipeline = Pipeline([
+    ("preprocessor", ColumnTransformer([
+        ("scaler",  StandardScaler(), NUMERIC_COLS),
+        ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False), ["_map"]),
+    ])),
+    ("classifier", LogisticRegression(**params)),
+])
 
-    model = LogisticRegression(C=C, max_iter=MAX_ITER, solver=SOLVER)
-    model.fit(X_train, y_train)
+pipeline.fit(X_train, y_train)
+train_acc = pipeline.score(X_train, y_train)
+print(f"Train accuracy : {train_acc:.4f}")
 
-    train_acc = model.score(X_train, y_train)
-    mlflow.log_metric("train_accuracy", train_acc)
-    mlflow.sklearn.log_model(model, artifact_path="model")
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+joblib.dump(pipeline, MODEL_DIR / "model.pkl")
+print(f"Pipeline saved : {MODEL_DIR / 'model.pkl'}")
 
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, MODEL_DIR / "model.pkl")
+if MLFLOW_TRACKING_URI:
+    import mlflow
+    import mlflow.sklearn
 
-    print(f"Train accuracy : {train_acc:.4f}")
-    print(f"Run ID         : {run.info.run_id}")
-    print(f"Model saved    : {MODEL_DIR / 'model.pkl'}")
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(EXPERIMENT_NAME)
+    with mlflow.start_run(run_name="train") as run:
+        mlflow.log_params(params)
+        mlflow.log_metric("train_accuracy", train_acc)
+        mlflow.sklearn.log_model(pipeline, artifact_path="model")
+        print(f"Run ID         : {run.info.run_id}")

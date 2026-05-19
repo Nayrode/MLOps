@@ -1,0 +1,17 @@
+feature_engineering:
+  base_elo: 1500
+  k: 32
+
+preprocessing:
+  train_ratio: 0.8
+  numeric_cols:
+    - elo_diff
+    - winrate_10_diff
+    - winrate_30_diff
+    - experience_diff
+    - rank_diff
+    - h2h_winrate
+
+model:
+  accuracy_threshold: 0.60
+  drift_threshold: 0.20
