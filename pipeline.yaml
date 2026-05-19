@@ -1,205 +1,245 @@
 # PIPELINE DEFINITION
 # Name: csgo-match-predictor
 # Inputs:
-#    mlflow_uri: str [Default: '']
 #    model_type: str [Default: 'xgboost']
+#    train_ratio: float [Default: 0.8]
 components:
-  comp-createpvc:
-    executorLabel: exec-createpvc
-    inputDefinitions:
-      parameters:
-        access_modes:
-          description: 'AccessModes to request for the provisioned PVC. May
-
-            be one or more of ``''ReadWriteOnce''``, ``''ReadOnlyMany''``, ``''ReadWriteMany''``,
-            or
-
-            ``''ReadWriteOncePod''``. Corresponds to `PersistentVolumeClaim.spec.accessModes
-            <https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes>`_.'
-          parameterType: LIST
-        annotations:
-          description: Annotations for the PVC's metadata. Corresponds to `PersistentVolumeClaim.metadata.annotations
-            <https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#PersistentVolumeClaim>`_.
-          isOptional: true
-          parameterType: STRUCT
-        pvc_name:
-          description: 'Name of the PVC. Corresponds to `PersistentVolumeClaim.metadata.name
-            <https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#PersistentVolumeClaim>`_.
-            Only one of ``pvc_name`` and ``pvc_name_suffix`` can
-
-            be provided.'
-          isOptional: true
-          parameterType: STRING
-        pvc_name_suffix:
-          description: 'Prefix to use for a dynamically generated name, which
-
-            will take the form ``<argo-workflow-name>-<pvc_name_suffix>``. Only one
-
-            of ``pvc_name`` and ``pvc_name_suffix`` can be provided.'
-          isOptional: true
-          parameterType: STRING
-        size:
-          description: The size of storage requested by the PVC that will be provisioned.
-            For example, ``'5Gi'``. Corresponds to `PersistentVolumeClaim.spec.resources.requests.storage
-            <https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#PersistentVolumeClaimSpec>`_.
-          parameterType: STRING
-        storage_class_name:
-          defaultValue: ''
-          description: 'Name of StorageClass from which to provision the PV
-
-            to back the PVC. ``None`` indicates to use the cluster''s default
-
-            storage_class_name. Set to ``''''`` for a statically specified PVC.'
-          isOptional: true
-          parameterType: STRING
-        volume_name:
-          description: 'Pre-existing PersistentVolume that should back the
-
-            provisioned PersistentVolumeClaim. Used for statically
-
-            specified PV only. Corresponds to `PersistentVolumeClaim.spec.volumeName
-            <https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#PersistentVolumeClaimSpec>`_.'
-          isOptional: true
-          parameterType: STRING
-    outputDefinitions:
-      parameters:
-        name:
-          parameterType: STRING
-  comp-deletepvc:
-    executorLabel: exec-deletepvc
-    inputDefinitions:
-      parameters:
-        pvc_name:
-          description: Name of the PVC to delete. Supports passing a runtime-generated
-            name, such as a name provided by ``kubernetes.CreatePvcOp().outputs['name']``.
-          parameterType: STRING
   comp-evaluate:
     executorLabel: exec-evaluate
-    inputDefinitions:
-      parameters:
-        mlflow_uri:
-          parameterType: STRING
   comp-feature-engineering:
     executorLabel: exec-feature-engineering
-  comp-monitoring:
-    executorLabel: exec-monitoring
   comp-preprocessing:
     executorLabel: exec-preprocessing
+    inputDefinitions:
+      parameters:
+        train_ratio:
+          defaultValue: 0.8
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
   comp-train:
     executorLabel: exec-train
     inputDefinitions:
       parameters:
-        mlflow_uri:
-          parameterType: STRING
         model_type:
+          defaultValue: xgboost
+          isOptional: true
           parameterType: STRING
 deploymentSpec:
   executors:
-    exec-createpvc:
-      container:
-        image: argostub/createpvc
-    exec-deletepvc:
-      container:
-        image: argostub/deletepvc
     exec-evaluate:
       container:
         args:
-        - '{"Concat": ["export MLFLOW_TRACKING_URI=", "{{$.inputs.parameters[''mlflow_uri'']}}",
-          " DATA_DIR=/app/data && cd /app/04_evaluate_model && python evaluate_model.py"]}'
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - evaluate
         command:
         - sh
         - -c
-        image: popopolette/csgo-mlops:latest
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
+          \ 'scikit-learn==1.6.1' 'xgboost==3.2.0' 'joblib==1.5.0'  &&  python3 -m\
+          \ pip install --quiet --no-warn-script-location 'kfp==2.16.1' '--no-deps'\
+          \ 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\
+          \n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef evaluate():\n    import joblib\n    import pandas as pd\n   \
+          \ from sklearn.metrics import accuracy_score, roc_auc_score\n    import\
+          \ json\n\n    pipeline = joblib.load(f\"{DATA}/model.pkl\")\n    X = pd.read_csv(f\"\
+          {DATA}/X_test.csv\",  index_col=0)\n    y = pd.read_csv(f\"{DATA}/y_test.csv\"\
+          ,  index_col=0).squeeze()\n\n    acc = accuracy_score(y, pipeline.predict(X))\n\
+          \    auc = roc_auc_score(y, pipeline.predict_proba(X)[:, 1])\n    print(f\"\
+          Accuracy: {acc:.4f} | ROC AUC: {auc:.4f}\")\n\n    with open(f\"{DATA}/evaluation.json\"\
+          , \"w\") as f:\n        json.dump({\"accuracy\": acc, \"roc_auc\": auc},\
+          \ f, indent=2)\n\n"
+        image: python:3.11-slim
     exec-feature-engineering:
       container:
         args:
-        - cp /app/data_static/results.csv /app/data/results.csv && cd /app/01_feature_engineering
-          && python feature_engineering.py
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - feature_engineering
         command:
         - sh
         - -c
-        image: popopolette/csgo-mlops:latest
-    exec-monitoring:
-      container:
-        args:
-        - DATA_DIR=/app/data cd /app/09_model_monitoring && python model_monitoring.py
-        command:
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
+          \ 'numpy==2.2.3'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
         - sh
-        - -c
-        image: popopolette/csgo-mlops:latest
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef feature_engineering():\n    import numpy as np\n    import pandas\
+          \ as pd\n    from pathlib import Path\n\n    def _streak(history):\n   \
+          \     if not history:\n            return 0\n        val = history[-1]\n\
+          \        streak = 0\n        for r in reversed(history):\n            if\
+          \ r == val: streak += 1\n            else: break\n        return streak\
+          \ if val == 1 else -streak\n\n    def build_state(df):\n        state =\
+          \ {\"elo\": {}, \"matches_played\": {}, \"win_history\": {}, \"h2h\": {},\
+          \ \"map_history\": {}}\n        for team in pd.concat([df[\"team_1\"], df[\"\
+          team_2\"]]).unique():\n            state[\"elo\"][team] = 1500\n       \
+          \     state[\"matches_played\"][team] = 0\n            state[\"win_history\"\
+          ][team] = []\n            state[\"map_history\"][team] = {}\n        return\
+          \ state\n\n    def compute_features(match, state):\n        team, opp, map_name\
+          \ = match[\"team_1\"], match[\"team_2\"], match[\"_map\"]\n        th =\
+          \ state[\"win_history\"].get(team, [])\n        oh = state[\"win_history\"\
+          ].get(opp, [])\n        h2h = state[\"h2h\"].get((team, opp), [])\n    \
+          \    mht = state[\"map_history\"].get(team, {}).get(map_name, [])\n    \
+          \    mho = state[\"map_history\"].get(opp, {}).get(map_name, [])\n     \
+          \   return {\n            \"elo_diff\":        state[\"elo\"].get(team,\
+          \ 1500) - state[\"elo\"].get(opp, 1500),\n            \"winrate_10_diff\"\
+          : (np.mean(th[-10:]) if th else 0) - (np.mean(oh[-10:]) if oh else 0),\n\
+          \            \"winrate_30_diff\": (np.mean(th[-30:]) if th else 0) - (np.mean(oh[-30:])\
+          \ if oh else 0),\n            \"experience_diff\": state[\"matches_played\"\
+          ].get(team, 0) - state[\"matches_played\"].get(opp, 0),\n            \"\
+          rank_diff\":       match[\"rank_1\"] - match[\"rank_2\"],\n            \"\
+          h2h_winrate\":     np.mean(h2h) if h2h else 0.5,\n            \"streak_diff\"\
+          :     _streak(th) - _streak(oh),\n            \"map_winrate_diff\": (np.mean(mht)\
+          \ if mht else 0.5) - (np.mean(mho) if mho else 0.5),\n        }\n\n    def\
+          \ update_state(match, state, k=32):\n        team, opp, map_name = match[\"\
+          team_1\"], match[\"team_2\"], match[\"_map\"]\n        result = int(match[\"\
+          match_winner\"] == 1)\n        r_t, r_o = state[\"elo\"].get(team, 1500),\
+          \ state[\"elo\"].get(opp, 1500)\n        exp = 1 / (1 + 10 ** ((r_o - r_t)\
+          \ / 400))\n        state[\"elo\"][team] = r_t + k * (result - exp)\n   \
+          \     state[\"elo\"][opp]  = r_o + k * ((1 - result) - (1 - exp))\n    \
+          \    state[\"win_history\"].setdefault(team, []).append(result)\n      \
+          \  state[\"win_history\"].setdefault(opp,  []).append(1 - result)\n    \
+          \    state[\"matches_played\"][team] = state[\"matches_played\"].get(team,\
+          \ 0) + 1\n        state[\"matches_played\"][opp]  = state[\"matches_played\"\
+          ].get(opp,  0) + 1\n        state[\"h2h\"].setdefault((team, opp), []).append(result)\n\
+          \        state[\"map_history\"].setdefault(team, {}).setdefault(map_name,\
+          \ []).append(result)\n        state[\"map_history\"].setdefault(opp,  {}).setdefault(map_name,\
+          \ []).append(1 - result)\n        return state\n\n    import urllib.request\n\
+          \    url = \"https://raw.githubusercontent.com/Nayrode/MLOps/main/data/results.csv\"\
+          \n    urllib.request.urlretrieve(url, f\"{DATA}/results.csv\")\n\n    df\
+          \ = pd.read_csv(f\"{DATA}/results.csv\", index_col=0, parse_dates=[\"date\"\
+          ])\n    print(f\"Loaded {len(df)} rows\")\n    state = build_state(df)\n\
+          \    X, y = [], []\n    for _, match in df.iterrows():\n        X.append(compute_features(match,\
+          \ state))\n        y.append(int(match[\"match_winner\"] == 1))\n       \
+          \ state = update_state(match, state)\n    out = pd.concat([df, pd.DataFrame(X),\
+          \ pd.Series(y, name=\"team_1_wins\")], axis=1)\n    out.to_csv(f\"{DATA}/df_featured.csv\"\
+          )\n    print(f\"Saved {len(out)} rows \u2192 {DATA}/df_featured.csv\")\n\
+          \n"
+        image: python:3.11-slim
     exec-preprocessing:
       container:
         args:
-        - cd /app/02_preprocessing && python preprocessing.py
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - preprocessing
         command:
         - sh
         - -c
-        image: popopolette/csgo-mlops:latest
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef preprocessing(train_ratio: float = 0.8):\n    import pandas as\
+          \ pd\n\n    FEATURE_COLS = [\"elo_diff\", \"winrate_10_diff\", \"winrate_30_diff\"\
+          ,\n                    \"experience_diff\", \"rank_diff\", \"h2h_winrate\"\
+          ,\n                    \"streak_diff\", \"map_winrate_diff\", \"_map\"]\n\
+          \n    df = pd.read_csv(f\"{DATA}/df_featured.csv\", index_col=0, parse_dates=[\"\
+          date\"])\n    df = df.sort_values(\"date\").reset_index(drop=True)\n   \
+          \ split = int(len(df) * train_ratio)\n    train_df, test_df = df.iloc[:split],\
+          \ df.iloc[split:]\n\n    train_df[FEATURE_COLS].to_csv(f\"{DATA}/X_train.csv\"\
+          )\n    train_df[\"team_1_wins\"].to_csv(f\"{DATA}/y_train.csv\")\n    test_df[FEATURE_COLS].to_csv(f\"\
+          {DATA}/X_test.csv\")\n    test_df[\"team_1_wins\"].to_csv(f\"{DATA}/y_test.csv\"\
+          )\n    print(f\"Train: {len(train_df)} | Test: {len(test_df)}\")\n\n"
+        image: python:3.11-slim
     exec-train:
       container:
         args:
-        - '{"Concat": ["export DATA_DIR=/app/data MODEL_DIR=/app/data MODEL_TYPE=",
-          "{{$.inputs.parameters[''model_type'']}}", " MLFLOW_TRACKING_URI=", "{{$.inputs.parameters[''mlflow_uri'']}}",
-          " && cd /app/03_train_model_kubernetes && python train.py"]}'
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train
         command:
         - sh
         - -c
-        image: popopolette/csgo-mlops:latest
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
+          \ 'scikit-learn==1.6.1' 'xgboost==3.2.0' 'joblib==1.5.0'  &&  python3 -m\
+          \ pip install --quiet --no-warn-script-location 'kfp==2.16.1' '--no-deps'\
+          \ 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\
+          \n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train(model_type: str = \"xgboost\"):\n    import joblib\n  \
+          \  import pandas as pd\n    from sklearn.compose import ColumnTransformer\n\
+          \    from sklearn.pipeline import Pipeline\n    from sklearn.preprocessing\
+          \ import OneHotEncoder, StandardScaler\n    from xgboost import XGBClassifier\n\
+          \n    NUMERIC_COLS = [\"elo_diff\", \"winrate_10_diff\", \"winrate_30_diff\"\
+          ,\n                    \"experience_diff\", \"rank_diff\", \"h2h_winrate\"\
+          ,\n                    \"streak_diff\", \"map_winrate_diff\"]\n\n    X =\
+          \ pd.read_csv(f\"{DATA}/X_train.csv\", index_col=0)\n    y = pd.read_csv(f\"\
+          {DATA}/y_train.csv\", index_col=0).squeeze()\n\n    pipeline = Pipeline([\n\
+          \        (\"preprocessor\", ColumnTransformer([\n            (\"scaler\"\
+          ,  StandardScaler(), NUMERIC_COLS),\n            (\"encoder\", OneHotEncoder(handle_unknown=\"\
+          ignore\", sparse_output=False), [\"_map\"]),\n        ])),\n        (\"\
+          classifier\", XGBClassifier(\n            n_estimators=300, learning_rate=0.05,\n\
+          \            max_depth=6, eval_metric=\"logloss\", random_state=42,\n  \
+          \      )),\n    ])\n    pipeline.fit(X, y)\n    print(f\"Train accuracy:\
+          \ {pipeline.score(X, y):.4f}\")\n    joblib.dump(pipeline, f\"{DATA}/model.pkl\"\
+          )\n    print(f\"Saved model \u2192 {DATA}/model.pkl\")\n\n"
+        image: python:3.11-slim
 pipelineInfo:
   name: csgo-match-predictor
 root:
   dag:
     tasks:
-      createpvc:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-createpvc
-        inputs:
-          parameters:
-            access_modes:
-              runtimeValue:
-                constant:
-                - ReadWriteMany
-            pvc_name:
-              runtimeValue:
-                constant: csgo-data-pvc
-            size:
-              runtimeValue:
-                constant: 2Gi
-            storage_class_name:
-              runtimeValue:
-                constant: nfs-rwx
-        taskInfo:
-          name: createpvc
-      deletepvc:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-deletepvc
-        dependentTasks:
-        - createpvc
-        - monitoring
-        inputs:
-          parameters:
-            pvc_name:
-              taskOutputParameter:
-                outputParameterKey: name
-                producerTask: createpvc
-        taskInfo:
-          name: deletepvc
       evaluate:
         cachingOptions:
           enableCache: true
         componentRef:
           name: comp-evaluate
         dependentTasks:
-        - createpvc
         - train
-        inputs:
-          parameters:
-            mlflow_uri:
-              componentInputParameter: mlflow_uri
         taskInfo:
           name: evaluate
       feature-engineering:
@@ -207,28 +247,19 @@ root:
           enableCache: true
         componentRef:
           name: comp-feature-engineering
-        dependentTasks:
-        - createpvc
         taskInfo:
           name: feature-engineering
-      monitoring:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-monitoring
-        dependentTasks:
-        - createpvc
-        - evaluate
-        taskInfo:
-          name: monitoring
       preprocessing:
         cachingOptions:
           enableCache: true
         componentRef:
           name: comp-preprocessing
         dependentTasks:
-        - createpvc
         - feature-engineering
+        inputs:
+          parameters:
+            train_ratio:
+              componentInputParameter: train_ratio
         taskInfo:
           name: preprocessing
       train:
@@ -237,26 +268,23 @@ root:
         componentRef:
           name: comp-train
         dependentTasks:
-        - createpvc
         - preprocessing
         inputs:
           parameters:
-            mlflow_uri:
-              componentInputParameter: mlflow_uri
             model_type:
               componentInputParameter: model_type
         taskInfo:
           name: train
   inputDefinitions:
     parameters:
-      mlflow_uri:
-        defaultValue: ''
-        isOptional: true
-        parameterType: STRING
       model_type:
         defaultValue: xgboost
         isOptional: true
         parameterType: STRING
+      train_ratio:
+        defaultValue: 0.8
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
 schemaVersion: 2.1.0
 sdkVersion: kfp-2.16.1
 ---
@@ -266,51 +294,29 @@ platforms:
       executors:
         exec-evaluate:
           pvcMount:
-          - mountPath: /app/data
+          - constant: csgo-data-pvc
+            mountPath: /data
             pvcNameParameter:
-              taskOutputParameter:
-                outputParameterKey: name
-                producerTask: createpvc
-            taskOutputParameter:
-              outputParameterKey: name
-              producerTask: createpvc
+              runtimeValue:
+                constant: csgo-data-pvc
         exec-feature-engineering:
           pvcMount:
-          - mountPath: /app/data
+          - constant: csgo-data-pvc
+            mountPath: /data
             pvcNameParameter:
-              taskOutputParameter:
-                outputParameterKey: name
-                producerTask: createpvc
-            taskOutputParameter:
-              outputParameterKey: name
-              producerTask: createpvc
-        exec-monitoring:
-          pvcMount:
-          - mountPath: /app/data
-            pvcNameParameter:
-              taskOutputParameter:
-                outputParameterKey: name
-                producerTask: createpvc
-            taskOutputParameter:
-              outputParameterKey: name
-              producerTask: createpvc
+              runtimeValue:
+                constant: csgo-data-pvc
         exec-preprocessing:
           pvcMount:
-          - mountPath: /app/data
+          - constant: csgo-data-pvc
+            mountPath: /data
             pvcNameParameter:
-              taskOutputParameter:
-                outputParameterKey: name
-                producerTask: createpvc
-            taskOutputParameter:
-              outputParameterKey: name
-              producerTask: createpvc
+              runtimeValue:
+                constant: csgo-data-pvc
         exec-train:
           pvcMount:
-          - mountPath: /app/data
+          - constant: csgo-data-pvc
+            mountPath: /data
             pvcNameParameter:
-              taskOutputParameter:
-                outputParameterKey: name
-                producerTask: createpvc
-            taskOutputParameter:
-              outputParameterKey: name
-              producerTask: createpvc
+              runtimeValue:
+                constant: csgo-data-pvc
