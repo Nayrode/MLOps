@@ -1,11 +1,8 @@
 stages:
   feature_engineering:
-    cmd: >
-      cd 01_feature_engineering &&
-      uv run jupyter nbconvert --to notebook --execute feature_engineering.ipynb
-      --output feature_engineering.ipynb --ExecutePreprocessor.kernel_name=feature-engineering
+    cmd: cd 01_feature_engineering && uv run python feature_engineering.py
     deps:
-      - 01_feature_engineering/feature_engineering.ipynb
+      - 01_feature_engineering/feature_engineering.py
       - data/results.csv
     params:
       - params.yaml:
@@ -14,12 +11,9 @@ stages:
       - data/df_featured.csv
 
   preprocessing:
-    cmd: >
-      cd 02_preprocessing &&
-      uv run jupyter nbconvert --to notebook --execute preprocessing.ipynb
-      --output preprocessing.ipynb --ExecutePreprocessor.kernel_name=preprocessing
+    cmd: cd 02_preprocessing && uv run python preprocessing.py
     deps:
-      - 02_preprocessing/preprocessing.ipynb
+      - 02_preprocessing/preprocessing.py
       - data/df_featured.csv
     params:
       - params.yaml:
@@ -31,9 +25,7 @@ stages:
       - data/y_test.csv
 
   train:
-    cmd: >
-      cd 03_train_model_kubernetes &&
-      DATA_DIR=$(pwd)/../data MODEL_DIR=$(pwd)/../data uv run python train.py
+    cmd: cd 03_train_model_kubernetes && DATA_DIR=$(pwd)/../data MODEL_DIR=$(pwd)/../data uv run python train.py
     deps:
       - 03_train_model_kubernetes/train.py
       - data/X_train.csv

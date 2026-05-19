@@ -9,9 +9,11 @@ from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from xgboost import XGBClassifier
 
 DATA_DIR  = Path(os.environ.get("DATA_DIR", "/data"))
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", "/model"))
+MODEL_TYPE = os.environ.get("MODEL_TYPE", "xgboost")  # "xgboost" | "logreg"
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "")
 EXPERIMENT_NAME     = os.environ.get("MLFLOW_EXPERIMENT", "csgo-match-predictor")
 
@@ -23,11 +25,26 @@ NUMERIC_COLS = [
 best_params_path = DATA_DIR / "best_params.json"
 if best_params_path.exists():
     with open(best_params_path) as f:
-        params = json.load(f)["params"]
-    print(f"Loaded best params: {params}")
+        content = json.load(f)
+    # only use best_params if they were tuned for the same model type
+    if content.get("model_type", "logreg") == MODEL_TYPE:
+        params = content["params"]
+        print(f"Loaded best params: {params}")
+    else:
+        params = {}
+        print(f"best_params.json is for '{content.get('model_type', 'logreg')}', ignoring (running {MODEL_TYPE})")
 else:
-    params = {"C": 1.0, "max_iter": 1000, "solver": "lbfgs"}
-    print(f"No best_params.json — using defaults: {params}")
+    params = {}
+
+if MODEL_TYPE == "xgboost":
+    defaults = {"n_estimators": 300, "learning_rate": 0.05, "max_depth": 6,
+                "eval_metric": "logloss", "random_state": 42}
+    classifier = XGBClassifier(**{**defaults, **params})
+else:
+    defaults = {"C": 1.0, "max_iter": 1000, "solver": "lbfgs"}
+    classifier = LogisticRegression(**{**defaults, **params})
+
+print(f"Model: {MODEL_TYPE} — {classifier}")
 
 X_train = pd.read_csv(DATA_DIR / "X_train.csv", index_col=0)
 y_train = pd.read_csv(DATA_DIR / "y_train.csv", index_col=0).squeeze()
@@ -38,7 +55,7 @@ pipeline = Pipeline([
         ("scaler",  StandardScaler(), NUMERIC_COLS),
         ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False), ["_map"]),
     ])),
-    ("classifier", LogisticRegression(**params)),
+    ("classifier", classifier),
 ])
 
 pipeline.fit(X_train, y_train)

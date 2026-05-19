@@ -1,12 +1,9 @@
 [project]
-name = "train-model-kubernetes"
+name = "mlops"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "ipykernel",
     "joblib",
-    "mlflow",
     "pandas",
     "scikit-learn",
-    "xgboost>=3.2.0",
 ]

@@ -13,5 +13,6 @@ preprocessing:
     - h2h_winrate
 
 model:
+  type: xgboost
   accuracy_threshold: 0.60
   drift_threshold: 0.20
