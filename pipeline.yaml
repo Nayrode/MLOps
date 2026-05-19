@@ -1,13 +1,47 @@
 # PIPELINE DEFINITION
 # Name: csgo-match-predictor
 # Inputs:
+#    accuracy_threshold: float [Default: 0.6]
+#    deploy_namespace: str [Default: 'csgo']
+#    drift_threshold: float [Default: 0.2]
+#    mlflow_tracking_uri: str [Default: 'http://mlflow.kubeflow.svc.cluster.local:5000']
 #    model_type: str [Default: 'xgboost']
 #    train_ratio: float [Default: 0.8]
 components:
+  comp-create-pvc:
+    executorLabel: exec-create-pvc
+    inputDefinitions:
+      parameters:
+        namespace:
+          defaultValue: csgo
+          isOptional: true
+          parameterType: STRING
+        storage:
+          defaultValue: 2Gi
+          isOptional: true
+          parameterType: STRING
+  comp-deploy:
+    executorLabel: exec-deploy
+    inputDefinitions:
+      parameters:
+        namespace:
+          defaultValue: csgo
+          isOptional: true
+          parameterType: STRING
+  comp-dvc-pull:
+    executorLabel: exec-dvc-pull
   comp-evaluate:
     executorLabel: exec-evaluate
   comp-feature-engineering:
     executorLabel: exec-feature-engineering
+  comp-monitoring:
+    executorLabel: exec-monitoring
+    inputDefinitions:
+      parameters:
+        drift_threshold:
+          defaultValue: 0.2
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
   comp-preprocessing:
     executorLabel: exec-preprocessing
     inputDefinitions:
@@ -16,6 +50,14 @@ components:
           defaultValue: 0.8
           isOptional: true
           parameterType: NUMBER_DOUBLE
+  comp-test-inference:
+    executorLabel: exec-test-inference
+    inputDefinitions:
+      parameters:
+        n_samples:
+          defaultValue: 10.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
   comp-train:
     executorLabel: exec-train
     inputDefinitions:
@@ -24,8 +66,153 @@ components:
           defaultValue: xgboost
           isOptional: true
           parameterType: STRING
+  comp-upload-model:
+    executorLabel: exec-upload-model
+    inputDefinitions:
+      parameters:
+        accuracy_threshold:
+          defaultValue: 0.6
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
+        mlflow_tracking_uri:
+          defaultValue: http://mlflow.kubeflow.svc.cluster.local:5000
+          isOptional: true
+          parameterType: STRING
 deploymentSpec:
   executors:
+    exec-create-pvc:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - create_pvc
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kubernetes==32.0.0'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef create_pvc(namespace: str = \"csgo\", storage: str = \"2Gi\"\
+          ):\n    from kubernetes import client as k8s_client, config as k8s_config\n\
+          \    PVC_NAME = \"csgo-data-pvc\"\n\n    k8s_config.load_incluster_config()\n\
+          \    core_api = k8s_client.CoreV1Api()\n\n    existing = [p.metadata.name\
+          \ for p in core_api.list_namespaced_persistent_volume_claim(namespace).items]\n\
+          \    if PVC_NAME in existing:\n        print(f\"PVC {PVC_NAME} already exists,\
+          \ skipping.\")\n        return\n\n    pvc = k8s_client.V1PersistentVolumeClaim(\n\
+          \        metadata=k8s_client.V1ObjectMeta(name=PVC_NAME, namespace=namespace),\n\
+          \        spec=k8s_client.V1PersistentVolumeClaimSpec(\n            access_modes=[\"\
+          ReadWriteOnce\"],\n            resources=k8s_client.V1ResourceRequirements(requests={\"\
+          storage\": storage}),\n        ),\n    )\n    core_api.create_namespaced_persistent_volume_claim(namespace=namespace,\
+          \ body=pvc)\n    print(f\"Created PVC {PVC_NAME} ({storage}) in namespace\
+          \ {namespace}\")\n\n"
+        image: python:3.11-slim
+    exec-deploy:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - deploy
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kubernetes==32.0.0'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef deploy(namespace: str = \"csgo\"):\n    import time\n    from\
+          \ kubernetes import client as k8s_client, config as k8s_config\n    DATA\
+          \ = \"/data\"\n    MODEL_NAME = \"csgo-match-predictor\"\n\n    with open(f\"\
+          {DATA}/model_uri.txt\") as f:\n        model_uri = f.read().strip()\n\n\
+          \    k8s_config.load_incluster_config()\n    custom_api = k8s_client.CustomObjectsApi()\n\
+          \n    body = {\n        \"apiVersion\": \"serving.kserve.io/v1beta1\",\n\
+          \        \"kind\": \"InferenceService\",\n        \"metadata\": {\"name\"\
+          : MODEL_NAME, \"namespace\": namespace},\n        \"spec\": {\n        \
+          \    \"predictor\": {\n                \"sklearn\": {\n                \
+          \    \"storageUri\": model_uri,\n                    \"protocolVersion\"\
+          : \"v2\",\n                }\n            }\n        },\n    }\n\n    try:\n\
+          \        custom_api.create_namespaced_custom_object(\n            group=\"\
+          serving.kserve.io\", version=\"v1beta1\",\n            namespace=namespace,\
+          \ plural=\"inferenceservices\", body=body,\n        )\n        print(f\"\
+          Created InferenceService {MODEL_NAME}\")\n    except k8s_client.exceptions.ApiException\
+          \ as e:\n        if e.status == 409:\n            custom_api.replace_namespaced_custom_object(\n\
+          \                group=\"serving.kserve.io\", version=\"v1beta1\",\n   \
+          \             namespace=namespace, plural=\"inferenceservices\",\n     \
+          \           name=MODEL_NAME, body=body,\n            )\n            print(f\"\
+          Updated InferenceService {MODEL_NAME}\")\n        else:\n            raise\n\
+          \n    for _ in range(60):\n        isvc = custom_api.get_namespaced_custom_object(\n\
+          \            group=\"serving.kserve.io\", version=\"v1beta1\",\n       \
+          \     namespace=namespace, plural=\"inferenceservices\", name=MODEL_NAME,\n\
+          \        )\n        conditions = isvc.get(\"status\", {}).get(\"conditions\"\
+          , [])\n        if any(c.get(\"type\") == \"Ready\" and c.get(\"status\"\
+          ) == \"True\" for c in conditions):\n            url = isvc[\"status\"][\"\
+          url\"]\n            print(f\"InferenceService ready at {url}\")\n      \
+          \      with open(f\"{DATA}/inference_url.txt\", \"w\") as f:\n         \
+          \       f.write(url)\n            return\n        time.sleep(5)\n    raise\
+          \ TimeoutError(f\"InferenceService {MODEL_NAME} not ready after 300s\")\n\
+          \n"
+        image: python:3.11-slim
+    exec-dvc-pull:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - dvc_pull
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef dvc_pull():\n    import urllib.request\n    import pandas as\
+          \ pd\n    DATA = \"/data\"\n    REPO  = \"https://raw.githubusercontent.com/Nayrode/MLOps/main\"\
+          \n\n    urllib.request.urlretrieve(f\"{REPO}/data/results.csv\", f\"{DATA}/results.csv\"\
+          )\n    df = pd.read_csv(f\"{DATA}/results.csv\")\n    print(f\"Downloaded\
+          \ {len(df)} rows \u2192 {DATA}/results.csv\")\n\n"
+        image: python:3.11-slim
     exec-evaluate:
       container:
         args:
@@ -54,15 +241,15 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef evaluate():\n    import joblib\n    import pandas as pd\n   \
-          \ from sklearn.metrics import accuracy_score, roc_auc_score\n    import\
-          \ json\n\n    pipeline = joblib.load(f\"{DATA}/model.pkl\")\n    X = pd.read_csv(f\"\
-          {DATA}/X_test.csv\",  index_col=0)\n    y = pd.read_csv(f\"{DATA}/y_test.csv\"\
-          ,  index_col=0).squeeze()\n\n    acc = accuracy_score(y, pipeline.predict(X))\n\
-          \    auc = roc_auc_score(y, pipeline.predict_proba(X)[:, 1])\n    print(f\"\
-          Accuracy: {acc:.4f} | ROC AUC: {auc:.4f}\")\n\n    with open(f\"{DATA}/evaluation.json\"\
-          , \"w\") as f:\n        json.dump({\"accuracy\": acc, \"roc_auc\": auc},\
-          \ f, indent=2)\n\n"
+          \ *\n\ndef evaluate():\n    import json\n    import joblib\n    import pandas\
+          \ as pd\n    from sklearn.metrics import accuracy_score, roc_auc_score\n\
+          \    DATA = \"/data\"\n\n    pipeline = joblib.load(f\"{DATA}/model.pkl\"\
+          )\n    X = pd.read_csv(f\"{DATA}/X_test.csv\", index_col=0)\n    y = pd.read_csv(f\"\
+          {DATA}/y_test.csv\", index_col=0).squeeze()\n\n    acc = accuracy_score(y,\
+          \ pipeline.predict(X))\n    auc = roc_auc_score(y, pipeline.predict_proba(X)[:,\
+          \ 1])\n    print(f\"Accuracy: {acc:.4f} | ROC AUC: {auc:.4f}\")\n\n    with\
+          \ open(f\"{DATA}/evaluation.json\", \"w\") as f:\n        json.dump({\"\
+          accuracy\": acc, \"roc_auc\": auc}, f, indent=2)\n\n"
         image: python:3.11-slim
     exec-feature-engineering:
       container:
@@ -92,56 +279,102 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef feature_engineering():\n    import numpy as np\n    import pandas\
-          \ as pd\n    from pathlib import Path\n\n    def _streak(history):\n   \
-          \     if not history:\n            return 0\n        val = history[-1]\n\
-          \        streak = 0\n        for r in reversed(history):\n            if\
-          \ r == val: streak += 1\n            else: break\n        return streak\
-          \ if val == 1 else -streak\n\n    def build_state(df):\n        state =\
-          \ {\"elo\": {}, \"matches_played\": {}, \"win_history\": {}, \"h2h\": {},\
-          \ \"map_history\": {}}\n        for team in pd.concat([df[\"team_1\"], df[\"\
-          team_2\"]]).unique():\n            state[\"elo\"][team] = 1500\n       \
-          \     state[\"matches_played\"][team] = 0\n            state[\"win_history\"\
-          ][team] = []\n            state[\"map_history\"][team] = {}\n        return\
-          \ state\n\n    def compute_features(match, state):\n        team, opp, map_name\
-          \ = match[\"team_1\"], match[\"team_2\"], match[\"_map\"]\n        th =\
-          \ state[\"win_history\"].get(team, [])\n        oh = state[\"win_history\"\
-          ].get(opp, [])\n        h2h = state[\"h2h\"].get((team, opp), [])\n    \
-          \    mht = state[\"map_history\"].get(team, {}).get(map_name, [])\n    \
-          \    mho = state[\"map_history\"].get(opp, {}).get(map_name, [])\n     \
-          \   return {\n            \"elo_diff\":        state[\"elo\"].get(team,\
-          \ 1500) - state[\"elo\"].get(opp, 1500),\n            \"winrate_10_diff\"\
-          : (np.mean(th[-10:]) if th else 0) - (np.mean(oh[-10:]) if oh else 0),\n\
-          \            \"winrate_30_diff\": (np.mean(th[-30:]) if th else 0) - (np.mean(oh[-30:])\
-          \ if oh else 0),\n            \"experience_diff\": state[\"matches_played\"\
-          ].get(team, 0) - state[\"matches_played\"].get(opp, 0),\n            \"\
-          rank_diff\":       match[\"rank_1\"] - match[\"rank_2\"],\n            \"\
-          h2h_winrate\":     np.mean(h2h) if h2h else 0.5,\n            \"streak_diff\"\
-          :     _streak(th) - _streak(oh),\n            \"map_winrate_diff\": (np.mean(mht)\
-          \ if mht else 0.5) - (np.mean(mho) if mho else 0.5),\n        }\n\n    def\
-          \ update_state(match, state, k=32):\n        team, opp, map_name = match[\"\
-          team_1\"], match[\"team_2\"], match[\"_map\"]\n        result = int(match[\"\
-          match_winner\"] == 1)\n        r_t, r_o = state[\"elo\"].get(team, 1500),\
-          \ state[\"elo\"].get(opp, 1500)\n        exp = 1 / (1 + 10 ** ((r_o - r_t)\
-          \ / 400))\n        state[\"elo\"][team] = r_t + k * (result - exp)\n   \
-          \     state[\"elo\"][opp]  = r_o + k * ((1 - result) - (1 - exp))\n    \
-          \    state[\"win_history\"].setdefault(team, []).append(result)\n      \
-          \  state[\"win_history\"].setdefault(opp,  []).append(1 - result)\n    \
-          \    state[\"matches_played\"][team] = state[\"matches_played\"].get(team,\
-          \ 0) + 1\n        state[\"matches_played\"][opp]  = state[\"matches_played\"\
+          \ as pd\n    DATA = \"/data\"\n\n    def _streak(history):\n        if not\
+          \ history:\n            return 0\n        val = history[-1]\n        streak\
+          \ = 0\n        for r in reversed(history):\n            if r == val: streak\
+          \ += 1\n            else: break\n        return streak if val == 1 else\
+          \ -streak\n\n    def build_state(df):\n        state = {\"elo\": {}, \"\
+          matches_played\": {}, \"win_history\": {}, \"h2h\": {}, \"map_history\"\
+          : {}}\n        for team in pd.concat([df[\"team_1\"], df[\"team_2\"]]).unique():\n\
+          \            state[\"elo\"][team] = 1500\n            state[\"matches_played\"\
+          ][team] = 0\n            state[\"win_history\"][team] = []\n           \
+          \ state[\"map_history\"][team] = {}\n        return state\n\n    def compute_features(match,\
+          \ state):\n        team, opp, map_name = match[\"team_1\"], match[\"team_2\"\
+          ], match[\"_map\"]\n        th  = state[\"win_history\"].get(team, [])\n\
+          \        oh  = state[\"win_history\"].get(opp, [])\n        h2h = state[\"\
+          h2h\"].get((team, opp), [])\n        mht = state[\"map_history\"].get(team,\
+          \ {}).get(map_name, [])\n        mho = state[\"map_history\"].get(opp, \
+          \ {}).get(map_name, [])\n        return {\n            \"elo_diff\":   \
+          \      state[\"elo\"].get(team, 1500) - state[\"elo\"].get(opp, 1500),\n\
+          \            \"winrate_10_diff\":  (np.mean(th[-10:]) if th else 0) - (np.mean(oh[-10:])\
+          \ if oh else 0),\n            \"winrate_30_diff\":  (np.mean(th[-30:]) if\
+          \ th else 0) - (np.mean(oh[-30:]) if oh else 0),\n            \"experience_diff\"\
+          :  state[\"matches_played\"].get(team, 0) - state[\"matches_played\"].get(opp,\
+          \ 0),\n            \"rank_diff\":        match[\"rank_1\"] - match[\"rank_2\"\
+          ],\n            \"h2h_winrate\":      np.mean(h2h) if h2h else 0.5,\n  \
+          \          \"streak_diff\":      _streak(th) - _streak(oh),\n          \
+          \  \"map_winrate_diff\": (np.mean(mht) if mht else 0.5) - (np.mean(mho)\
+          \ if mho else 0.5),\n        }\n\n    def update_state(match, state, k=32):\n\
+          \        team, opp, map_name = match[\"team_1\"], match[\"team_2\"], match[\"\
+          _map\"]\n        result = int(match[\"match_winner\"] == 1)\n        r_t,\
+          \ r_o = state[\"elo\"].get(team, 1500), state[\"elo\"].get(opp, 1500)\n\
+          \        exp = 1 / (1 + 10 ** ((r_o - r_t) / 400))\n        state[\"elo\"\
+          ][team] = r_t + k * (result - exp)\n        state[\"elo\"][opp]  = r_o +\
+          \ k * ((1 - result) - (1 - exp))\n        state[\"win_history\"].setdefault(team,\
+          \ []).append(result)\n        state[\"win_history\"].setdefault(opp,  []).append(1\
+          \ - result)\n        state[\"matches_played\"][team] = state[\"matches_played\"\
+          ].get(team, 0) + 1\n        state[\"matches_played\"][opp]  = state[\"matches_played\"\
           ].get(opp,  0) + 1\n        state[\"h2h\"].setdefault((team, opp), []).append(result)\n\
           \        state[\"map_history\"].setdefault(team, {}).setdefault(map_name,\
           \ []).append(result)\n        state[\"map_history\"].setdefault(opp,  {}).setdefault(map_name,\
-          \ []).append(1 - result)\n        return state\n\n    import urllib.request\n\
-          \    url = \"https://raw.githubusercontent.com/Nayrode/MLOps/main/data/results.csv\"\
-          \n    urllib.request.urlretrieve(url, f\"{DATA}/results.csv\")\n\n    df\
-          \ = pd.read_csv(f\"{DATA}/results.csv\", index_col=0, parse_dates=[\"date\"\
-          ])\n    print(f\"Loaded {len(df)} rows\")\n    state = build_state(df)\n\
-          \    X, y = [], []\n    for _, match in df.iterrows():\n        X.append(compute_features(match,\
+          \ []).append(1 - result)\n        return state\n\n    df = pd.read_csv(f\"\
+          {DATA}/results.csv\", index_col=0, parse_dates=[\"date\"])\n    print(f\"\
+          Loaded {len(df)} rows\")\n    state = build_state(df)\n    X, y = [], []\n\
+          \    for _, match in df.iterrows():\n        X.append(compute_features(match,\
           \ state))\n        y.append(int(match[\"match_winner\"] == 1))\n       \
           \ state = update_state(match, state)\n    out = pd.concat([df, pd.DataFrame(X),\
           \ pd.Series(y, name=\"team_1_wins\")], axis=1)\n    out.to_csv(f\"{DATA}/df_featured.csv\"\
           )\n    print(f\"Saved {len(out)} rows \u2192 {DATA}/df_featured.csv\")\n\
           \n"
+        image: python:3.11-slim
+    exec-monitoring:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - monitoring
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
+          \ 'scikit-learn==1.6.1' 'xgboost==3.2.0' 'joblib==1.5.0' 'evidently==0.5.0'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef monitoring(drift_threshold: float = 0.20):\n    import joblib\n\
+          \    import pandas as pd\n    from pathlib import Path\n    from sklearn.metrics\
+          \ import accuracy_score, roc_auc_score\n    from evidently import Report\n\
+          \    from evidently.presets import DataDriftPreset\n    DATA = \"/data\"\
+          \n\n    reference = pd.read_csv(f\"{DATA}/X_train.csv\", index_col=0)\n\
+          \    current   = pd.read_csv(f\"{DATA}/X_test.csv\",  index_col=0)\n   \
+          \ y_test    = pd.read_csv(f\"{DATA}/y_test.csv\",  index_col=0).squeeze()\n\
+          \n    report_dir = Path(f\"{DATA}/reports\")\n    report_dir.mkdir(parents=True,\
+          \ exist_ok=True)\n\n    snapshot = Report([DataDriftPreset()]).run(reference_data=reference,\
+          \ current_data=current)\n    snapshot.save_html(str(report_dir / \"drift_report.html\"\
+          ))\n\n    metrics       = snapshot.dict()[\"metrics\"]\n    drift_result\
+          \  = metrics[0][\"value\"]\n    share_drifted = drift_result[\"share\"]\n\
+          \    n_drifted     = int(drift_result[\"count\"])\n    n_total       = len(reference.columns)\n\
+          \n    print(f\"Drifted columns: {n_drifted}/{n_total} ({share_drifted:.1%})\"\
+          )\n    if share_drifted > drift_threshold:\n        print(f\"ALERT: drift\
+          \ {share_drifted:.1%} exceeds threshold {drift_threshold:.1%}\")\n    else:\n\
+          \        print(\"No significant drift detected.\")\n\n    model  = joblib.load(f\"\
+          {DATA}/model.pkl\")\n    y_pred = model.predict(current)\n    y_prob = model.predict_proba(current)[:,\
+          \ 1]\n    acc    = accuracy_score(y_test, y_pred)\n    auc    = roc_auc_score(y_test,\
+          \ y_prob)\n    print(f\"Accuracy: {acc:.4f} | ROC AUC: {auc:.4f}\")\n\n"
         image: python:3.11-slim
     exec-preprocessing:
       container:
@@ -171,16 +404,58 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef preprocessing(train_ratio: float = 0.8):\n    import pandas as\
-          \ pd\n\n    FEATURE_COLS = [\"elo_diff\", \"winrate_10_diff\", \"winrate_30_diff\"\
-          ,\n                    \"experience_diff\", \"rank_diff\", \"h2h_winrate\"\
-          ,\n                    \"streak_diff\", \"map_winrate_diff\", \"_map\"]\n\
-          \n    df = pd.read_csv(f\"{DATA}/df_featured.csv\", index_col=0, parse_dates=[\"\
-          date\"])\n    df = df.sort_values(\"date\").reset_index(drop=True)\n   \
-          \ split = int(len(df) * train_ratio)\n    train_df, test_df = df.iloc[:split],\
+          \ pd\n    DATA = \"/data\"\n\n    FEATURE_COLS = [\"elo_diff\", \"winrate_10_diff\"\
+          , \"winrate_30_diff\",\n                    \"experience_diff\", \"rank_diff\"\
+          , \"h2h_winrate\",\n                    \"streak_diff\", \"map_winrate_diff\"\
+          , \"_map\"]\n\n    df = pd.read_csv(f\"{DATA}/df_featured.csv\", index_col=0,\
+          \ parse_dates=[\"date\"])\n    df = df.sort_values(\"date\").reset_index(drop=True)\n\
+          \    split = int(len(df) * train_ratio)\n    train_df, test_df = df.iloc[:split],\
           \ df.iloc[split:]\n\n    train_df[FEATURE_COLS].to_csv(f\"{DATA}/X_train.csv\"\
           )\n    train_df[\"team_1_wins\"].to_csv(f\"{DATA}/y_train.csv\")\n    test_df[FEATURE_COLS].to_csv(f\"\
           {DATA}/X_test.csv\")\n    test_df[\"team_1_wins\"].to_csv(f\"{DATA}/y_test.csv\"\
           )\n    print(f\"Train: {len(train_df)} | Test: {len(test_df)}\")\n\n"
+        image: python:3.11-slim
+    exec-test-inference:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - test_inference
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'requests==2.32.3'\
+          \ 'pandas==2.2.3'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef test_inference(n_samples: int = 10):\n    import requests\n \
+          \   import pandas as pd\n    DATA = \"/data\"\n    MODEL_NAME = \"csgo-match-predictor\"\
+          \n\n    with open(f\"{DATA}/inference_url.txt\") as f:\n        base_url\
+          \ = f.read().strip()\n\n    X_test = pd.read_csv(f\"{DATA}/X_test.csv\"\
+          , index_col=0)\n    y_test = pd.read_csv(f\"{DATA}/y_test.csv\", index_col=0).squeeze()\n\
+          \n    sample   = X_test.sample(n_samples, random_state=42)\n    expected\
+          \ = y_test.loc[sample.index].tolist()\n\n    url      = f\"{base_url}/v1/models/{MODEL_NAME}:predict\"\
+          \n    response = requests.post(url, json={\"instances\": sample.values.tolist()},\
+          \ timeout=30)\n    response.raise_for_status()\n\n    predictions = response.json()[\"\
+          predictions\"]\n    correct = sum(p == e for p, e in zip(predictions, expected))\n\
+          \    print(f\"Smoke test: {correct}/{n_samples} correct\")\n    assert len(predictions)\
+          \ == n_samples, f\"Expected {n_samples}, got {len(predictions)}\"\n    assert\
+          \ all(p in [0, 1] for p in predictions), \"Predictions must be 0 or 1\"\n\
+          \    print(\"Smoke test passed.\")\n\n"
         image: python:3.11-slim
     exec-train:
       container:
@@ -214,25 +489,112 @@ deploymentSpec:
           \  import pandas as pd\n    from sklearn.compose import ColumnTransformer\n\
           \    from sklearn.pipeline import Pipeline\n    from sklearn.preprocessing\
           \ import OneHotEncoder, StandardScaler\n    from xgboost import XGBClassifier\n\
-          \n    NUMERIC_COLS = [\"elo_diff\", \"winrate_10_diff\", \"winrate_30_diff\"\
-          ,\n                    \"experience_diff\", \"rank_diff\", \"h2h_winrate\"\
-          ,\n                    \"streak_diff\", \"map_winrate_diff\"]\n\n    X =\
-          \ pd.read_csv(f\"{DATA}/X_train.csv\", index_col=0)\n    y = pd.read_csv(f\"\
-          {DATA}/y_train.csv\", index_col=0).squeeze()\n\n    pipeline = Pipeline([\n\
-          \        (\"preprocessor\", ColumnTransformer([\n            (\"scaler\"\
-          ,  StandardScaler(), NUMERIC_COLS),\n            (\"encoder\", OneHotEncoder(handle_unknown=\"\
-          ignore\", sparse_output=False), [\"_map\"]),\n        ])),\n        (\"\
-          classifier\", XGBClassifier(\n            n_estimators=300, learning_rate=0.05,\n\
-          \            max_depth=6, eval_metric=\"logloss\", random_state=42,\n  \
-          \      )),\n    ])\n    pipeline.fit(X, y)\n    print(f\"Train accuracy:\
-          \ {pipeline.score(X, y):.4f}\")\n    joblib.dump(pipeline, f\"{DATA}/model.pkl\"\
-          )\n    print(f\"Saved model \u2192 {DATA}/model.pkl\")\n\n"
+          \    DATA = \"/data\"\n\n    NUMERIC_COLS = [\"elo_diff\", \"winrate_10_diff\"\
+          , \"winrate_30_diff\",\n                    \"experience_diff\", \"rank_diff\"\
+          , \"h2h_winrate\",\n                    \"streak_diff\", \"map_winrate_diff\"\
+          ]\n\n    X = pd.read_csv(f\"{DATA}/X_train.csv\", index_col=0)\n    y =\
+          \ pd.read_csv(f\"{DATA}/y_train.csv\", index_col=0).squeeze()\n\n    pipeline\
+          \ = Pipeline([\n        (\"preprocessor\", ColumnTransformer([\n       \
+          \     (\"scaler\",  StandardScaler(), NUMERIC_COLS),\n            (\"encoder\"\
+          , OneHotEncoder(handle_unknown=\"ignore\", sparse_output=False), [\"_map\"\
+          ]),\n        ])),\n        (\"classifier\", XGBClassifier(\n           \
+          \ n_estimators=300, learning_rate=0.05,\n            max_depth=6, eval_metric=\"\
+          logloss\", random_state=42,\n        )),\n    ])\n    pipeline.fit(X, y)\n\
+          \    print(f\"Train accuracy: {pipeline.score(X, y):.4f}\")\n    joblib.dump(pipeline,\
+          \ f\"{DATA}/model.pkl\")\n    print(f\"Saved model \u2192 {DATA}/model.pkl\"\
+          )\n\n"
+        image: python:3.11-slim
+    exec-upload-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - upload_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow==2.19.0'\
+          \ 'scikit-learn==1.6.1' 'xgboost==3.2.0' 'joblib==1.5.0' 'boto3==1.36.0'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef upload_model(accuracy_threshold: float = 0.60,\n            \
+          \     mlflow_tracking_uri: str = \"http://mlflow.kubeflow.svc.cluster.local:5000\"\
+          ):\n    import json\n    import joblib\n    import mlflow\n    import mlflow.sklearn\n\
+          \    from mlflow.tracking import MlflowClient\n    DATA = \"/data\"\n  \
+          \  MODEL_NAME = \"csgo-match-predictor\"\n\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n\
+          \    mlflow.set_experiment(MODEL_NAME)\n\n    model = joblib.load(f\"{DATA}/model.pkl\"\
+          )\n    with open(f\"{DATA}/evaluation.json\") as f:\n        metrics = json.load(f)\n\
+          \n    print(f\"Accuracy: {metrics['accuracy']:.4f} | AUC: {metrics['roc_auc']:.4f}\"\
+          )\n    if metrics[\"accuracy\"] < accuracy_threshold:\n        raise ValueError(f\"\
+          Accuracy {metrics['accuracy']:.4f} below threshold {accuracy_threshold}\"\
+          )\n\n    with mlflow.start_run(run_name=\"kubeflow-pipeline\") as run:\n\
+          \        mlflow.log_metrics(metrics)\n        mlflow.log_params({\"model_type\"\
+          : type(model.named_steps[\"classifier\"]).__name__})\n        info = mlflow.sklearn.log_model(\n\
+          \            model,\n            artifact_path=\"model\",\n            registered_model_name=MODEL_NAME,\n\
+          \        )\n        model_uri = info.model_uri\n\n    client = MlflowClient(tracking_uri=mlflow_tracking_uri)\n\
+          \    versions = client.get_latest_versions(MODEL_NAME, stages=[\"None\"\
+          ])\n    latest = versions[0]\n    client.transition_model_version_stage(\n\
+          \        name=MODEL_NAME, version=latest.version, stage=\"Staging\",\n \
+          \   )\n    print(f\"Version {latest.version} \u2192 Staging  (uri: {model_uri})\"\
+          )\n\n    with open(f\"{DATA}/model_uri.txt\", \"w\") as f:\n        f.write(model_uri)\n\
+          \n"
         image: python:3.11-slim
 pipelineInfo:
   name: csgo-match-predictor
 root:
   dag:
     tasks:
+      create-pvc:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-create-pvc
+        inputs:
+          parameters:
+            namespace:
+              componentInputParameter: deploy_namespace
+            storage:
+              runtimeValue:
+                constant: 2Gi
+        taskInfo:
+          name: create-pvc
+      deploy:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-deploy
+        dependentTasks:
+        - upload-model
+        inputs:
+          parameters:
+            namespace:
+              componentInputParameter: deploy_namespace
+        taskInfo:
+          name: deploy
+      dvc-pull:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-dvc-pull
+        dependentTasks:
+        - create-pvc
+        taskInfo:
+          name: dvc-pull
       evaluate:
         cachingOptions:
           enableCache: true
@@ -247,8 +609,23 @@ root:
           enableCache: true
         componentRef:
           name: comp-feature-engineering
+        dependentTasks:
+        - dvc-pull
         taskInfo:
           name: feature-engineering
+      monitoring:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-monitoring
+        dependentTasks:
+        - evaluate
+        inputs:
+          parameters:
+            drift_threshold:
+              componentInputParameter: drift_threshold
+        taskInfo:
+          name: monitoring
       preprocessing:
         cachingOptions:
           enableCache: true
@@ -262,6 +639,15 @@ root:
               componentInputParameter: train_ratio
         taskInfo:
           name: preprocessing
+      test-inference:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-test-inference
+        dependentTasks:
+        - deploy
+        taskInfo:
+          name: test-inference
       train:
         cachingOptions:
           enableCache: true
@@ -275,8 +661,39 @@ root:
               componentInputParameter: model_type
         taskInfo:
           name: train
+      upload-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-upload-model
+        dependentTasks:
+        - evaluate
+        inputs:
+          parameters:
+            accuracy_threshold:
+              componentInputParameter: accuracy_threshold
+            mlflow_tracking_uri:
+              componentInputParameter: mlflow_tracking_uri
+        taskInfo:
+          name: upload-model
   inputDefinitions:
     parameters:
+      accuracy_threshold:
+        defaultValue: 0.6
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+      deploy_namespace:
+        defaultValue: csgo
+        isOptional: true
+        parameterType: STRING
+      drift_threshold:
+        defaultValue: 0.2
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+      mlflow_tracking_uri:
+        defaultValue: http://mlflow.kubeflow.svc.cluster.local:5000
+        isOptional: true
+        parameterType: STRING
       model_type:
         defaultValue: xgboost
         isOptional: true
@@ -292,7 +709,34 @@ platforms:
   kubernetes:
     deploymentSpec:
       executors:
+        exec-create-pvc:
+          nodeSelector:
+            labels:
+              node-role.kubernetes.io/worker: worker
+        exec-deploy:
+          nodeSelector:
+            labels:
+              node-role.kubernetes.io/worker: worker
+          pvcMount:
+          - constant: csgo-data-pvc
+            mountPath: /data
+            pvcNameParameter:
+              runtimeValue:
+                constant: csgo-data-pvc
+        exec-dvc-pull:
+          nodeSelector:
+            labels:
+              node-role.kubernetes.io/worker: worker
+          pvcMount:
+          - constant: csgo-data-pvc
+            mountPath: /data
+            pvcNameParameter:
+              runtimeValue:
+                constant: csgo-data-pvc
         exec-evaluate:
+          nodeSelector:
+            labels:
+              node-role.kubernetes.io/worker: worker
           pvcMount:
           - constant: csgo-data-pvc
             mountPath: /data
@@ -300,6 +744,19 @@ platforms:
               runtimeValue:
                 constant: csgo-data-pvc
         exec-feature-engineering:
+          nodeSelector:
+            labels:
+              node-role.kubernetes.io/worker: worker
+          pvcMount:
+          - constant: csgo-data-pvc
+            mountPath: /data
+            pvcNameParameter:
+              runtimeValue:
+                constant: csgo-data-pvc
+        exec-monitoring:
+          nodeSelector:
+            labels:
+              node-role.kubernetes.io/worker: worker
           pvcMount:
           - constant: csgo-data-pvc
             mountPath: /data
@@ -307,6 +764,19 @@ platforms:
               runtimeValue:
                 constant: csgo-data-pvc
         exec-preprocessing:
+          nodeSelector:
+            labels:
+              node-role.kubernetes.io/worker: worker
+          pvcMount:
+          - constant: csgo-data-pvc
+            mountPath: /data
+            pvcNameParameter:
+              runtimeValue:
+                constant: csgo-data-pvc
+        exec-test-inference:
+          nodeSelector:
+            labels:
+              node-role.kubernetes.io/worker: worker
           pvcMount:
           - constant: csgo-data-pvc
             mountPath: /data
@@ -314,6 +784,19 @@ platforms:
               runtimeValue:
                 constant: csgo-data-pvc
         exec-train:
+          nodeSelector:
+            labels:
+              node-role.kubernetes.io/worker: worker
+          pvcMount:
+          - constant: csgo-data-pvc
+            mountPath: /data
+            pvcNameParameter:
+              runtimeValue:
+                constant: csgo-data-pvc
+        exec-upload-model:
+          nodeSelector:
+            labels:
+              node-role.kubernetes.io/worker: worker
           pvcMount:
           - constant: csgo-data-pvc
             mountPath: /data
