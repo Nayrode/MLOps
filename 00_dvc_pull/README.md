@@ -4,25 +4,21 @@ Pulls the versioned dataset from a remote GitHub repo + S3 backend using `dvc.ap
 
 ## Inputs
 
-- GitHub repo `USERNAME/CS-yr-match-predictor` at git ref `cap4`
+- GitHub repo `Nayrode/MLOps.git` at git ref `cap4`
 - `DVC_S3_ACCESS_KEY` and `DVC_S3_SECRET_KEY` in `.env`
 
 ## Outputs
 
-- `data/raw/results.csv` — raw CS:GO match results
+- `data/results.csv` — raw CS:GO match results
 
 ## Run
 
 ```bash
-uv sync
-uv run jupyter lab
+cp .env.example .env   # fill in credentials
+uv sync && uv run python dvc_pull.py
 ```
 
-Open `dvc_pull.ipynb` and run all cells.
-
 ## Environment
-
-Create a `.env` file in this directory (never commit it):
 
 ```
 DVC_S3_ACCESS_KEY=...

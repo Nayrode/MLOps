@@ -16,8 +16,6 @@ Smoke-tests the deployed inference service with 10 sample rows from the test set
 
 ## Environment
 
-Create `.env`:
-
 ```
 INFERENCE_URL=http://<kserve-ingress>/v1/models/csgo-match-predictor:predict
 ```
@@ -27,8 +25,6 @@ Defaults to `http://localhost:8080/...` if unset (useful with port-forward).
 ## Run
 
 ```bash
-uv sync
-uv run jupyter lab
+cp .env.example .env
+uv sync && uv run python test_inference_service.py
 ```
-
-Open `test_inference_service.ipynb` and run all cells.

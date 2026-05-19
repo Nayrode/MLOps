@@ -15,7 +15,7 @@ Monitors the deployed model for data drift and performance degradation using Evi
 - `data/X_train.csv` — training baseline (reference distribution)
 - `data/X_test.csv` — current / production data (swap with live logs in production)
 - `data/y_test.csv` — ground truth labels
-- `data/model.pkl` — model from step 03
+- `data/model.pkl` — full Pipeline from step 03
 
 ## Outputs
 
@@ -26,13 +26,11 @@ Monitors the deployed model for data drift and performance degradation using Evi
 ## Run
 
 ```bash
-uv sync
-uv run jupyter lab
+uv sync && uv run python model_monitoring.py
 ```
-
-Open `model_monitoring.ipynb` and run all cells.
 
 ## Notes
 
 - In production, replace `X_test.csv` with a rolling window of logged inference requests
 - Ground truth labels become available once match results are confirmed
+- `_map` is a string column in `X_train` / `X_test` — Evidently handles it as categorical

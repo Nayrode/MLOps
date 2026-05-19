@@ -4,13 +4,13 @@ Registers the trained model in the MLflow Model Registry and promotes it to `Sta
 
 ## Inputs
 
-- `data/model.pkl` — trained model from step 03
+- `data/model.pkl` — full Pipeline from step 03
 - `data/evaluation.json` — metrics from step 04
 
 ## What it does
 
 1. Loads model + metrics
-2. Logs model to MLflow Model Registry as `csgo-match-predictor`
+2. Logs Pipeline to MLflow Model Registry as `csgo-match-predictor`
 3. If `accuracy >= 0.60`, transitions the new version to `Staging`
 
 ## Outputs
@@ -20,17 +20,13 @@ Registers the trained model in the MLflow Model Registry and promotes it to `Sta
 
 ## Environment
 
-Create `.env` (optional — defaults to local `mlruns/`):
-
 ```
-MLFLOW_TRACKING_URI=http://localhost:5000
+MLFLOW_TRACKING_URI=http://localhost:5000   # optional, defaults to local mlruns/
 ```
 
 ## Run
 
 ```bash
-uv sync
-uv run jupyter lab
+cp .env.example .env
+uv sync && uv run python upload_model.py
 ```
-
-Open `upload_model.ipynb` and run all cells.

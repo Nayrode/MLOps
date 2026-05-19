@@ -1,6 +1,6 @@
 # 08 — Hyperparameter Tuning
 
-Searches for the best `LogisticRegression` hyperparameters using Optuna with time-series-aware cross-validation.
+Searches for the best classifier hyperparameters using Optuna with time-series-aware cross-validation.
 
 ## Inputs
 
@@ -9,36 +9,43 @@ Searches for the best `LogisticRegression` hyperparameters using Optuna with tim
 
 ## Search space
 
+**XGBoost** (default):
+
+| Param | Range |
+|-------|-------|
+| `n_estimators` | 100 – 500 |
+| `learning_rate` | log-uniform [1e-3, 0.3] |
+| `max_depth` | 3 – 10 |
+
+**LogisticRegression** (`MODEL_TYPE=logreg`):
+
 | Param | Range |
 |-------|-------|
 | `C` | log-uniform [1e-3, 100] |
 | `solver` | `lbfgs`, `liblinear` |
 | `max_iter` | 200 – 2000 (step 200) |
 
-CV strategy: `TimeSeriesSplit(n_splits=5)` — respects chronological order, no future leakage.  
-Objective: maximise mean ROC AUC across folds.  
-Each trial is logged as a nested MLflow run under `csgo-hp-tuning`.
+CV strategy: `TimeSeriesSplit(n_splits=5)` — respects chronological order.  
+Objective: maximise mean ROC AUC across folds.
 
 ## Outputs
 
-- `data/best_params.json` — `{"params": {...}, "cv_roc_auc": ...}`
-- MLflow experiment `csgo-hp-tuning` with all trial runs
+- `data/best_params.json` — `{"model_type": "xgboost", "params": {...}, "cv_roc_auc": ...}`
 
-Step 03 automatically reads `best_params.json` if it exists.
+Step 03 reads `best_params.json` automatically if `model_type` matches `MODEL_TYPE`.
 
 ## Environment
 
-Create `.env` (optional — defaults to local `mlruns/`):
-
 ```
-MLFLOW_TRACKING_URI=http://localhost:5000
+MLFLOW_TRACKING_URI=http://localhost:5000   # optional
+MODEL_TYPE=xgboost                          # or logreg
 ```
 
 ## Run
 
 ```bash
-uv sync
-uv run jupyter lab
+cp .env.example .env
+uv sync && uv run python hyperparameter_tuning.py
 ```
 
-Open `hyperparameter_tuning.ipynb` and run all cells. Then re-run step 03.
+Then re-run step 03.

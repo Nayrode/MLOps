@@ -4,7 +4,7 @@ Evaluates the trained model on the held-out test set, logs metrics to MLflow, an
 
 ## Inputs
 
-- `data/model.pkl` — trained model from step 03
+- `data/model.pkl` — full Pipeline from step 03
 - `data/X_test.csv`
 - `data/y_test.csv`
 
@@ -24,17 +24,13 @@ Evaluates the trained model on the held-out test set, logs metrics to MLflow, an
 
 ## Environment
 
-Create `.env` (optional — defaults to local `mlruns/`):
-
 ```
-MLFLOW_TRACKING_URI=http://localhost:5000
+MLFLOW_TRACKING_URI=http://localhost:5000   # optional, defaults to local mlruns/
 ```
 
 ## Run
 
 ```bash
-uv sync
-uv run jupyter lab
+cp .env.example .env
+uv sync && uv run python evaluate_model.py
 ```
-
-Open `evaluate_model.ipynb` and run all cells.

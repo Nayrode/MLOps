@@ -1,23 +1,25 @@
 # 03 — Train Model on Kubernetes
 
-Trains a `LogisticRegression` classifier on the preprocessed CS:GO match data. Supports two modes: local (fallback, runs in the notebook directly) and Kubernetes (builds a Docker image, submits a Job, streams logs).
+Trains a full sklearn `Pipeline` (StandardScaler + OneHotEncoder + classifier) on the preprocessed CS:GO match data. Supports two modes: local and Kubernetes Job.
 
 ## Model
 
-`sklearn.linear_model.LogisticRegression` — v1 baseline.  
-Hyperparameters are configurable via environment variables / ConfigMap. If `data/best_params.json` exists (from step 08), those values take priority.
+Default: `XGBClassifier` — accuracy 78.1%, AUC 0.867.  
+Alternative: `LogisticRegression` — accuracy 76.9%, AUC 0.851.
+
+Switch via `MODEL_TYPE` env var (`xgboost` or `logreg`).  
+If `data/best_params.json` exists (from step 08) and matches the model type, those params take priority.
 
 ## Inputs
 
 - `data/X_train.csv`
 - `data/y_train.csv`
-- `data/best_params.json` _(optional — from step 08)_
+- `data/best_params.json` _(optional — from step 08, must match `model_type`)_
 
 ## Outputs
 
-- `data/model.pkl` — serialised model (local mode)
-- `/model/model.pkl` — serialised model (Kubernetes PVC)
-- MLflow run with `train_accuracy` metric
+- `data/model.pkl` — full serialised Pipeline (preprocessor + classifier)
+- MLflow run with `train_accuracy` metric (if `MLFLOW_TRACKING_URI` is set)
 
 ## Files
 
@@ -26,19 +28,27 @@ Hyperparameters are configurable via environment variables / ConfigMap. If `data
 | `train.py` | Training script (container entrypoint) |
 | `Dockerfile` | Builds the training image |
 | `job.yaml` | Kubernetes Job + ConfigMap |
-| `train_model_kubernetes.ipynb` | Orchestration: local training → build → push → submit → monitor |
+| `train_model_kubernetes.ipynb` | Orchestration: local → build → push → submit → monitor |
 
 ## Run
 
+**Local:**
+
 ```bash
 uv sync
-uv run jupyter lab
+DATA_DIR=$(pwd)/../data MODEL_DIR=$(pwd)/../data MODEL_TYPE=xgboost uv run python train.py
 ```
 
-Open `train_model_kubernetes.ipynb`. Run the **local training cell** for a quick baseline, or the **Kubernetes cells** to submit the Job.
+**Kubernetes:**
+
+```bash
+docker build -t YOUR_REGISTRY/csgo-trainer:latest .
+docker push YOUR_REGISTRY/csgo-trainer:latest
+kubectl apply -f job.yaml
+kubectl logs -f job/csgo-train-job
+```
 
 ## Notes
 
-- Update `REGISTRY` in the notebook and `image:` in `job.yaml` before pushing
-- The Kubernetes Job reads data from `csgo-data-pvc` and writes the model to `csgo-model-pvc`
-- Set `MLFLOW_TRACKING_URI` to point at your MLflow server
+- Update `image:` in `job.yaml` with your registry before pushing
+- The Job reads from `csgo-data-pvc` and writes to `csgo-model-pvc`
