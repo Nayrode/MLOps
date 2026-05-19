@@ -1,95 +1,113 @@
-"""Kubeflow Pipelines v2 — CS:GO match predictor pipeline.
+"""Kubeflow Pipelines v2 — CS:GO match predictor.
 
-Build & push the image first:
-    docker build -t YOUR_REGISTRY/csgo-mlops:latest .
-    docker push YOUR_REGISTRY/csgo-mlops:latest
+Each step runs in its own Pod, sharing data through a PVC at /app/data.
+results.csv is baked into the image and copied to the PVC by the first step.
 
-Compile:
-    pip install kfp
-    python pipeline.py          # writes pipeline.yaml
-
-Submit (once Kubeflow is running):
-    kubectl apply -f pvc.yaml
-    python pipeline.py --run    # compiles + submits to KFP
+Usage:
+    uv run python pipeline.py              # compile → pipeline.yaml
+    uv run python pipeline.py --run        # compile + submit to KFP
+    uv run python pipeline.py --run --host http://<kfp-host>
 """
 import argparse
-from kfp import dsl, compiler
 
-IMAGE     = "YOUR_REGISTRY/csgo-mlops:latest"
-DATA_DIR  = "/data"
-MODEL_DIR = "/data"
+from kfp import compiler, dsl
+from kfp.dsl import ConcatPlaceholder
+from kfp.kubernetes import CreatePVC, DeletePVC, mount_pvc
 
-
-# ── Shared volume (PVC) ──────────────────────────────────────────────────────
-
-pvc = dsl.PipelineVolume(pvc_name="csgo-data-pvc")
+IMAGE     = "popopolette/csgo-mlops:latest"
+DATA_PATH = "/app/data"        # PVC mount — ../data relative paths resolve here
+STATIC    = "/app/data_static" # results.csv baked into the image
 
 
 # ── Components ───────────────────────────────────────────────────────────────
 
-def make_step(name: str, cmd: str) -> dsl.ContainerOp:
-    """Helper: one container step writing to the shared PVC."""
-    op = dsl.ContainerOp(
-        name=name,
+@dsl.container_component
+def feature_engineering():
+    return dsl.ContainerSpec(
         image=IMAGE,
-        command=["bash", "-c"],
-        arguments=[cmd],
-        pvolumes={DATA_DIR: pvc},
+        command=["sh", "-c"],
+        args=[f"cp {STATIC}/results.csv {DATA_PATH}/results.csv && "
+               "cd /app/01_feature_engineering && python feature_engineering.py"],
     )
-    op.container.set_memory_request("512Mi")
-    return op
+
+
+@dsl.container_component
+def preprocessing():
+    return dsl.ContainerSpec(
+        image=IMAGE,
+        command=["sh", "-c"],
+        args=["cd /app/02_preprocessing && python preprocessing.py"],
+    )
+
+
+@dsl.container_component
+def train(model_type: str, mlflow_uri: str):
+    return dsl.ContainerSpec(
+        image=IMAGE,
+        command=["sh", "-c"],
+        args=[ConcatPlaceholder([
+            f"export DATA_DIR={DATA_PATH} MODEL_DIR={DATA_PATH} MODEL_TYPE=",
+            model_type,
+            " MLFLOW_TRACKING_URI=",
+            mlflow_uri,
+            " && cd /app/03_train_model_kubernetes && python train.py",
+        ])],
+    )
+
+
+@dsl.container_component
+def evaluate(mlflow_uri: str):
+    return dsl.ContainerSpec(
+        image=IMAGE,
+        command=["sh", "-c"],
+        args=[ConcatPlaceholder([
+            "export MLFLOW_TRACKING_URI=",
+            mlflow_uri,
+            f" DATA_DIR={DATA_PATH} && cd /app/04_evaluate_model && python evaluate_model.py",
+        ])],
+    )
+
+
+@dsl.container_component
+def monitoring():
+    return dsl.ContainerSpec(
+        image=IMAGE,
+        command=["sh", "-c"],
+        args=[f"DATA_DIR={DATA_PATH} cd /app/09_model_monitoring && python model_monitoring.py"],
+    )
 
 
 # ── Pipeline DAG ─────────────────────────────────────────────────────────────
 
-@dsl.pipeline(
-    name="csgo-match-predictor",
-    description="Feature engineering → preprocessing → train → evaluate → monitoring",
-)
-def csgo_pipeline(
-    model_type: str = "xgboost",
-    mlflow_uri: str = "",
-):
-    # Step 01 — Feature engineering
-    fe = make_step(
-        "feature-engineering",
-        f"cd /app && python 01_feature_engineering/feature_engineering.py",
+@dsl.pipeline(name="csgo-match-predictor")
+def csgo_pipeline(model_type: str = "xgboost", mlflow_uri: str = ""):
+
+    pvc = CreatePVC(
+        pvc_name="csgo-data-pvc",
+        access_modes=["ReadWriteMany"],
+        size="2Gi",
+        storage_class_name="nfs-rwx",
     )
 
-    # Step 02 — Preprocessing
-    pre = make_step(
-        "preprocessing",
-        f"cd /app && python 02_preprocessing/preprocessing.py",
-    ).after(fe)
+    def with_data(task):
+        mount_pvc(task, pvc_name=pvc.outputs["name"], mount_path=DATA_PATH)
+        return task
 
-    # Step 03 — Train
-    train = make_step(
-        "train",
-        f"cd /app && DATA_DIR={DATA_DIR} MODEL_DIR={MODEL_DIR} "
-        f"MODEL_TYPE={model_type} MLFLOW_TRACKING_URI={mlflow_uri} "
-        f"python 03_train_model_kubernetes/train.py",
-    ).after(pre)
+    fe  = with_data(feature_engineering())
+    pre = with_data(preprocessing().after(fe))
+    tr  = with_data(train(model_type=model_type, mlflow_uri=mlflow_uri).after(pre))
+    ev  = with_data(evaluate(mlflow_uri=mlflow_uri).after(tr))
+    mon = with_data(monitoring().after(ev))
 
-    # Step 04 — Evaluate
-    evaluate = make_step(
-        "evaluate",
-        f"cd /app && MLFLOW_TRACKING_URI={mlflow_uri} "
-        f"python 04_evaluate_model/evaluate_model.py",
-    ).after(train)
-
-    # Step 09 — Monitoring
-    make_step(
-        "monitoring",
-        f"cd /app && python 09_model_monitoring/model_monitoring.py",
-    ).after(evaluate)
+    DeletePVC(pvc_name=pvc.outputs["name"]).after(mon)
 
 
 # ── Entrypoint ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run", action="store_true", help="Submit to KFP after compiling")
-    parser.add_argument("--host", default="http://localhost:3000", help="KFP host URL")
+    parser.add_argument("--run",  action="store_true", help="Submit to KFP after compiling")
+    parser.add_argument("--host", default="http://localhost:3000", help="KFP UI host")
     args = parser.parse_args()
 
     compiler.Compiler().compile(csgo_pipeline, "pipeline.yaml")
@@ -103,4 +121,4 @@ if __name__ == "__main__":
             arguments={"model_type": "xgboost"},
             run_name="csgo-run",
         )
-        print(f"Submitted → {run.run_id}")
+        print(f"Submitted → run id: {run.run_id}")

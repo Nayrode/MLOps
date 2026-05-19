@@ -15,3 +15,6 @@ COPY 03_train_model_kubernetes/train.py            03_train_model_kubernetes/
 COPY 04_evaluate_model/evaluate_model.py           04_evaluate_model/
 COPY 09_model_monitoring/model_monitoring.py       09_model_monitoring/
 COPY predict.py serve.py ./
+
+# Static raw data — copied to the shared PVC by the first pipeline step
+COPY data/results.csv data_static/results.csv

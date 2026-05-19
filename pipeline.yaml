@@ -1,0 +1,316 @@
+# PIPELINE DEFINITION
+# Name: csgo-match-predictor
+# Inputs:
+#    mlflow_uri: str [Default: '']
+#    model_type: str [Default: 'xgboost']
+components:
+  comp-createpvc:
+    executorLabel: exec-createpvc
+    inputDefinitions:
+      parameters:
+        access_modes:
+          description: 'AccessModes to request for the provisioned PVC. May
+
+            be one or more of ``''ReadWriteOnce''``, ``''ReadOnlyMany''``, ``''ReadWriteMany''``,
+            or
+
+            ``''ReadWriteOncePod''``. Corresponds to `PersistentVolumeClaim.spec.accessModes
+            <https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes>`_.'
+          parameterType: LIST
+        annotations:
+          description: Annotations for the PVC's metadata. Corresponds to `PersistentVolumeClaim.metadata.annotations
+            <https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#PersistentVolumeClaim>`_.
+          isOptional: true
+          parameterType: STRUCT
+        pvc_name:
+          description: 'Name of the PVC. Corresponds to `PersistentVolumeClaim.metadata.name
+            <https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#PersistentVolumeClaim>`_.
+            Only one of ``pvc_name`` and ``pvc_name_suffix`` can
+
+            be provided.'
+          isOptional: true
+          parameterType: STRING
+        pvc_name_suffix:
+          description: 'Prefix to use for a dynamically generated name, which
+
+            will take the form ``<argo-workflow-name>-<pvc_name_suffix>``. Only one
+
+            of ``pvc_name`` and ``pvc_name_suffix`` can be provided.'
+          isOptional: true
+          parameterType: STRING
+        size:
+          description: The size of storage requested by the PVC that will be provisioned.
+            For example, ``'5Gi'``. Corresponds to `PersistentVolumeClaim.spec.resources.requests.storage
+            <https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#PersistentVolumeClaimSpec>`_.
+          parameterType: STRING
+        storage_class_name:
+          defaultValue: ''
+          description: 'Name of StorageClass from which to provision the PV
+
+            to back the PVC. ``None`` indicates to use the cluster''s default
+
+            storage_class_name. Set to ``''''`` for a statically specified PVC.'
+          isOptional: true
+          parameterType: STRING
+        volume_name:
+          description: 'Pre-existing PersistentVolume that should back the
+
+            provisioned PersistentVolumeClaim. Used for statically
+
+            specified PV only. Corresponds to `PersistentVolumeClaim.spec.volumeName
+            <https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#PersistentVolumeClaimSpec>`_.'
+          isOptional: true
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        name:
+          parameterType: STRING
+  comp-deletepvc:
+    executorLabel: exec-deletepvc
+    inputDefinitions:
+      parameters:
+        pvc_name:
+          description: Name of the PVC to delete. Supports passing a runtime-generated
+            name, such as a name provided by ``kubernetes.CreatePvcOp().outputs['name']``.
+          parameterType: STRING
+  comp-evaluate:
+    executorLabel: exec-evaluate
+    inputDefinitions:
+      parameters:
+        mlflow_uri:
+          parameterType: STRING
+  comp-feature-engineering:
+    executorLabel: exec-feature-engineering
+  comp-monitoring:
+    executorLabel: exec-monitoring
+  comp-preprocessing:
+    executorLabel: exec-preprocessing
+  comp-train:
+    executorLabel: exec-train
+    inputDefinitions:
+      parameters:
+        mlflow_uri:
+          parameterType: STRING
+        model_type:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-createpvc:
+      container:
+        image: argostub/createpvc
+    exec-deletepvc:
+      container:
+        image: argostub/deletepvc
+    exec-evaluate:
+      container:
+        args:
+        - '{"Concat": ["export MLFLOW_TRACKING_URI=", "{{$.inputs.parameters[''mlflow_uri'']}}",
+          " DATA_DIR=/app/data && cd /app/04_evaluate_model && python evaluate_model.py"]}'
+        command:
+        - sh
+        - -c
+        image: popopolette/csgo-mlops:latest
+    exec-feature-engineering:
+      container:
+        args:
+        - cp /app/data_static/results.csv /app/data/results.csv && cd /app/01_feature_engineering
+          && python feature_engineering.py
+        command:
+        - sh
+        - -c
+        image: popopolette/csgo-mlops:latest
+    exec-monitoring:
+      container:
+        args:
+        - DATA_DIR=/app/data cd /app/09_model_monitoring && python model_monitoring.py
+        command:
+        - sh
+        - -c
+        image: popopolette/csgo-mlops:latest
+    exec-preprocessing:
+      container:
+        args:
+        - cd /app/02_preprocessing && python preprocessing.py
+        command:
+        - sh
+        - -c
+        image: popopolette/csgo-mlops:latest
+    exec-train:
+      container:
+        args:
+        - '{"Concat": ["export DATA_DIR=/app/data MODEL_DIR=/app/data MODEL_TYPE=",
+          "{{$.inputs.parameters[''model_type'']}}", " MLFLOW_TRACKING_URI=", "{{$.inputs.parameters[''mlflow_uri'']}}",
+          " && cd /app/03_train_model_kubernetes && python train.py"]}'
+        command:
+        - sh
+        - -c
+        image: popopolette/csgo-mlops:latest
+pipelineInfo:
+  name: csgo-match-predictor
+root:
+  dag:
+    tasks:
+      createpvc:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-createpvc
+        inputs:
+          parameters:
+            access_modes:
+              runtimeValue:
+                constant:
+                - ReadWriteMany
+            pvc_name:
+              runtimeValue:
+                constant: csgo-data-pvc
+            size:
+              runtimeValue:
+                constant: 2Gi
+            storage_class_name:
+              runtimeValue:
+                constant: nfs-rwx
+        taskInfo:
+          name: createpvc
+      deletepvc:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-deletepvc
+        dependentTasks:
+        - createpvc
+        - monitoring
+        inputs:
+          parameters:
+            pvc_name:
+              taskOutputParameter:
+                outputParameterKey: name
+                producerTask: createpvc
+        taskInfo:
+          name: deletepvc
+      evaluate:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-evaluate
+        dependentTasks:
+        - createpvc
+        - train
+        inputs:
+          parameters:
+            mlflow_uri:
+              componentInputParameter: mlflow_uri
+        taskInfo:
+          name: evaluate
+      feature-engineering:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-feature-engineering
+        dependentTasks:
+        - createpvc
+        taskInfo:
+          name: feature-engineering
+      monitoring:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-monitoring
+        dependentTasks:
+        - createpvc
+        - evaluate
+        taskInfo:
+          name: monitoring
+      preprocessing:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-preprocessing
+        dependentTasks:
+        - createpvc
+        - feature-engineering
+        taskInfo:
+          name: preprocessing
+      train:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train
+        dependentTasks:
+        - createpvc
+        - preprocessing
+        inputs:
+          parameters:
+            mlflow_uri:
+              componentInputParameter: mlflow_uri
+            model_type:
+              componentInputParameter: model_type
+        taskInfo:
+          name: train
+  inputDefinitions:
+    parameters:
+      mlflow_uri:
+        defaultValue: ''
+        isOptional: true
+        parameterType: STRING
+      model_type:
+        defaultValue: xgboost
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.1
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-evaluate:
+          pvcMount:
+          - mountPath: /app/data
+            pvcNameParameter:
+              taskOutputParameter:
+                outputParameterKey: name
+                producerTask: createpvc
+            taskOutputParameter:
+              outputParameterKey: name
+              producerTask: createpvc
+        exec-feature-engineering:
+          pvcMount:
+          - mountPath: /app/data
+            pvcNameParameter:
+              taskOutputParameter:
+                outputParameterKey: name
+                producerTask: createpvc
+            taskOutputParameter:
+              outputParameterKey: name
+              producerTask: createpvc
+        exec-monitoring:
+          pvcMount:
+          - mountPath: /app/data
+            pvcNameParameter:
+              taskOutputParameter:
+                outputParameterKey: name
+                producerTask: createpvc
+            taskOutputParameter:
+              outputParameterKey: name
+              producerTask: createpvc
+        exec-preprocessing:
+          pvcMount:
+          - mountPath: /app/data
+            pvcNameParameter:
+              taskOutputParameter:
+                outputParameterKey: name
+                producerTask: createpvc
+            taskOutputParameter:
+              outputParameterKey: name
+              producerTask: createpvc
+        exec-train:
+          pvcMount:
+          - mountPath: /app/data
+            pvcNameParameter:
+              taskOutputParameter:
+                outputParameterKey: name
+                producerTask: createpvc
+            taskOutputParameter:
+              outputParameterKey: name
+              producerTask: createpvc
