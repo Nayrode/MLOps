@@ -1,7 +1,6 @@
 """Kubeflow Pipelines v2 — CS:GO match predictor.
 
-Shared PVC at /data between all steps. DAG:
-
+DAG:
   dvc_pull → feature_engineering → preprocessing → train → evaluate ─┬─ upload_model → deploy → test_inference
                                                                        └─ monitoring
 
@@ -11,8 +10,8 @@ Usage:
 """
 import argparse
 from kfp import compiler, dsl
-from kfp.dsl import Dataset, HTML, Input, Metrics, Model, Output
-from kfp.kubernetes import mount_pvc, add_node_selector
+from kfp.dsl import Dataset, Model, Metrics, Artifact, Input, Output
+from kfp.kubernetes import add_node_selector
 
 BASE_IMAGE = "python:3.11-slim"
 
@@ -21,54 +20,28 @@ BASE_IMAGE = "python:3.11-slim"
 
 @dsl.component(
     base_image=BASE_IMAGE,
-    packages_to_install=["kubernetes==32.0.0"],
-)
-def create_pvc(namespace: str = "csgo", storage: str = "2Gi"):
-    from kubernetes import client as k8s_client, config as k8s_config
-    PVC_NAME = "csgo-data-pvc"
-
-    k8s_config.load_incluster_config()
-    core_api = k8s_client.CoreV1Api()
-
-    existing = [p.metadata.name for p in core_api.list_namespaced_persistent_volume_claim(namespace).items]
-    if PVC_NAME in existing:
-        print(f"PVC {PVC_NAME} already exists, skipping.")
-        return
-
-    pvc = k8s_client.V1PersistentVolumeClaim(
-        metadata=k8s_client.V1ObjectMeta(name=PVC_NAME, namespace=namespace),
-        spec=k8s_client.V1PersistentVolumeClaimSpec(
-            access_modes=["ReadWriteOnce"],
-            resources=k8s_client.V1ResourceRequirements(requests={"storage": storage}),
-        ),
-    )
-    core_api.create_namespaced_persistent_volume_claim(namespace=namespace, body=pvc)
-    print(f"Created PVC {PVC_NAME} ({storage}) in namespace {namespace}")
-
-
-@dsl.component(
-    base_image=BASE_IMAGE,
     packages_to_install=["pandas==2.2.3"],
 )
-def dvc_pull():
+def dvc_pull(raw_data: Output[Dataset]):
     import urllib.request
     import pandas as pd
-    DATA = "/data"
-    REPO  = "https://raw.githubusercontent.com/Nayrode/MLOps/main"
 
-    urllib.request.urlretrieve(f"{REPO}/data/results.csv", f"{DATA}/results.csv")
-    df = pd.read_csv(f"{DATA}/results.csv")
-    print(f"Downloaded {len(df)} rows → {DATA}/results.csv")
+    REPO = "https://raw.githubusercontent.com/Nayrode/MLOps/main"
+    urllib.request.urlretrieve(f"{REPO}/data/results.csv", raw_data.path)
+    df = pd.read_csv(raw_data.path)
+    print(f"Downloaded {len(df)} rows → {raw_data.path}")
 
 
 @dsl.component(
     base_image=BASE_IMAGE,
     packages_to_install=["pandas==2.2.3", "numpy==2.2.3"],
 )
-def feature_engineering():
+def feature_engineering(
+    raw_data: Input[Dataset],
+    featured_data: Output[Dataset],
+):
     import numpy as np
     import pandas as pd
-    DATA = "/data"
 
     def _streak(history):
         if not history:
@@ -123,7 +96,7 @@ def feature_engineering():
         state["map_history"].setdefault(opp,  {}).setdefault(map_name, []).append(1 - result)
         return state
 
-    df = pd.read_csv(f"{DATA}/results.csv", index_col=0, parse_dates=["date"])
+    df = pd.read_csv(raw_data.path, index_col=0, parse_dates=["date"])
     print(f"Loaded {len(df)} rows")
     state = build_state(df)
     X, y = [], []
@@ -132,31 +105,37 @@ def feature_engineering():
         y.append(int(match["match_winner"] == 1))
         state = update_state(match, state)
     out = pd.concat([df, pd.DataFrame(X), pd.Series(y, name="team_1_wins")], axis=1)
-    out.to_csv(f"{DATA}/df_featured.csv")
-    print(f"Saved {len(out)} rows → {DATA}/df_featured.csv")
+    out.to_csv(featured_data.path)
+    print(f"Saved {len(out)} rows → {featured_data.path}")
 
 
 @dsl.component(
     base_image=BASE_IMAGE,
     packages_to_install=["pandas==2.2.3"],
 )
-def preprocessing(train_ratio: float = 0.8):
+def preprocessing(
+    featured_data: Input[Dataset],
+    train_ratio: float,
+    X_train: Output[Dataset],
+    y_train: Output[Dataset],
+    X_test: Output[Dataset],
+    y_test: Output[Dataset],
+):
     import pandas as pd
-    DATA = "/data"
 
     FEATURE_COLS = ["elo_diff", "winrate_10_diff", "winrate_30_diff",
                     "experience_diff", "rank_diff", "h2h_winrate",
                     "streak_diff", "map_winrate_diff", "_map"]
 
-    df = pd.read_csv(f"{DATA}/df_featured.csv", index_col=0, parse_dates=["date"])
+    df = pd.read_csv(featured_data.path, index_col=0, parse_dates=["date"])
     df = df.sort_values("date").reset_index(drop=True)
     split = int(len(df) * train_ratio)
     train_df, test_df = df.iloc[:split], df.iloc[split:]
 
-    train_df[FEATURE_COLS].to_csv(f"{DATA}/X_train.csv")
-    train_df["team_1_wins"].to_csv(f"{DATA}/y_train.csv")
-    test_df[FEATURE_COLS].to_csv(f"{DATA}/X_test.csv")
-    test_df["team_1_wins"].to_csv(f"{DATA}/y_test.csv")
+    train_df[FEATURE_COLS].to_csv(X_train.path)
+    train_df["team_1_wins"].to_csv(y_train.path)
+    test_df[FEATURE_COLS].to_csv(X_test.path)
+    test_df["team_1_wins"].to_csv(y_test.path)
     print(f"Train: {len(train_df)} | Test: {len(test_df)}")
 
 
@@ -164,21 +143,25 @@ def preprocessing(train_ratio: float = 0.8):
     base_image=BASE_IMAGE,
     packages_to_install=["pandas==2.2.3", "scikit-learn==1.6.1", "xgboost==3.2.0", "joblib==1.5.0"],
 )
-def train(model_type: str = "xgboost"):
+def train(
+    X_train: Input[Dataset],
+    y_train: Input[Dataset],
+    model_type: str,
+    model: Output[Model],
+):
     import joblib
     import pandas as pd
     from sklearn.compose import ColumnTransformer
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import OneHotEncoder, StandardScaler
     from xgboost import XGBClassifier
-    DATA = "/data"
 
     NUMERIC_COLS = ["elo_diff", "winrate_10_diff", "winrate_30_diff",
                     "experience_diff", "rank_diff", "h2h_winrate",
                     "streak_diff", "map_winrate_diff"]
 
-    X = pd.read_csv(f"{DATA}/X_train.csv", index_col=0)
-    y = pd.read_csv(f"{DATA}/y_train.csv", index_col=0).squeeze()
+    X = pd.read_csv(X_train.path, index_col=0)
+    y = pd.read_csv(y_train.path, index_col=0).squeeze()
 
     pipeline = Pipeline([
         ("preprocessor", ColumnTransformer([
@@ -192,33 +175,38 @@ def train(model_type: str = "xgboost"):
     ])
     pipeline.fit(X, y)
     print(f"Train accuracy: {pipeline.score(X, y):.4f}")
-    joblib.dump(pipeline, f"{DATA}/model.pkl")
-    print(f"Saved model → {DATA}/model.pkl")
+    joblib.dump(pipeline, model.path)
+    print(f"Saved model → {model.path}")
 
 
 @dsl.component(
     base_image=BASE_IMAGE,
     packages_to_install=["pandas==2.2.3", "scikit-learn==1.6.1", "xgboost==3.2.0", "joblib==1.5.0"],
 )
-def evaluate(eval_metrics: Output[Metrics]):
+def evaluate(
+    model: Input[Model],
+    X_test: Input[Dataset],
+    y_test: Input[Dataset],
+    metrics: Output[Metrics],
+    eval_results: Output[Artifact],
+):
     import json
     import joblib
     import pandas as pd
     from sklearn.metrics import accuracy_score, roc_auc_score
-    DATA = "/data"
 
-    pipeline = joblib.load(f"{DATA}/model.pkl")
-    X = pd.read_csv(f"{DATA}/X_test.csv", index_col=0)
-    y = pd.read_csv(f"{DATA}/y_test.csv", index_col=0).squeeze()
+    pipeline = joblib.load(model.path)
+    X = pd.read_csv(X_test.path, index_col=0)
+    y = pd.read_csv(y_test.path, index_col=0).squeeze()
 
     acc = accuracy_score(y, pipeline.predict(X))
     auc = roc_auc_score(y, pipeline.predict_proba(X)[:, 1])
     print(f"Accuracy: {acc:.4f} | ROC AUC: {auc:.4f}")
 
-    eval_metrics.log_metric("accuracy", acc)
-    eval_metrics.log_metric("roc_auc", auc)
+    metrics.log_metric("accuracy", acc)
+    metrics.log_metric("roc_auc",  auc)
 
-    with open(f"{DATA}/evaluation.json", "w") as f:
+    with open(eval_results.path, "w") as f:
         json.dump({"accuracy": acc, "roc_auc": auc}, f, indent=2)
 
 
@@ -227,36 +215,40 @@ def evaluate(eval_metrics: Output[Metrics]):
     packages_to_install=["mlflow==2.19.0", "scikit-learn==1.6.1", "xgboost==3.2.0",
                          "joblib==1.5.0", "boto3==1.36.0"],
 )
-def upload_model(accuracy_threshold: float = 0.60,
-                 mlflow_tracking_uri: str = "http://mlflow.kubeflow.svc.cluster.local:5000"):
+def upload_model(
+    model: Input[Model],
+    eval_results: Input[Artifact],
+    accuracy_threshold: float,
+    mlflow_tracking_uri: str,
+    model_uri: Output[Artifact],
+):
     import json
     import joblib
     import mlflow
     import mlflow.sklearn
     from mlflow.tracking import MlflowClient
-    DATA = "/data"
     MODEL_NAME = "csgo-match-predictor"
 
     mlflow.set_tracking_uri(mlflow_tracking_uri)
     mlflow.set_experiment(MODEL_NAME)
 
-    model = joblib.load(f"{DATA}/model.pkl")
-    with open(f"{DATA}/evaluation.json") as f:
-        metrics = json.load(f)
+    pipeline = joblib.load(model.path)
+    with open(eval_results.path) as f:
+        metrics_data = json.load(f)
 
-    print(f"Accuracy: {metrics['accuracy']:.4f} | AUC: {metrics['roc_auc']:.4f}")
-    if metrics["accuracy"] < accuracy_threshold:
-        raise ValueError(f"Accuracy {metrics['accuracy']:.4f} below threshold {accuracy_threshold}")
+    print(f"Accuracy: {metrics_data['accuracy']:.4f} | AUC: {metrics_data['roc_auc']:.4f}")
+    if metrics_data["accuracy"] < accuracy_threshold:
+        raise ValueError(f"Accuracy {metrics_data['accuracy']:.4f} below threshold {accuracy_threshold}")
 
-    with mlflow.start_run(run_name="kubeflow-pipeline"):
-        mlflow.log_metrics(metrics)
-        mlflow.log_params({"model_type": type(model.named_steps["classifier"]).__name__})
+    with mlflow.start_run(run_name="kubeflow-pipeline") as run:
+        mlflow.log_metrics(metrics_data)
+        mlflow.log_params({"model_type": type(pipeline.named_steps["classifier"]).__name__})
         info = mlflow.sklearn.log_model(
-            model,
+            pipeline,
             artifact_path="model",
             registered_model_name=MODEL_NAME,
         )
-        model_uri = info.model_uri
+        uri = info.model_uri
 
     client = MlflowClient(tracking_uri=mlflow_tracking_uri)
     versions = client.get_latest_versions(MODEL_NAME, stages=["None"])
@@ -264,24 +256,27 @@ def upload_model(accuracy_threshold: float = 0.60,
     client.transition_model_version_stage(
         name=MODEL_NAME, version=latest.version, stage="Staging",
     )
-    print(f"Version {latest.version} → Staging  (uri: {model_uri})")
+    print(f"Version {latest.version} → Staging  (uri: {uri})")
 
-    with open(f"{DATA}/model_uri.txt", "w") as f:
-        f.write(model_uri)
+    with open(model_uri.path, "w") as f:
+        f.write(uri)
 
 
 @dsl.component(
     base_image=BASE_IMAGE,
     packages_to_install=["kubernetes==32.0.0"],
 )
-def deploy(namespace: str = "csgo"):
+def deploy(
+    model_uri: Input[Artifact],
+    namespace: str,
+    inference_url: Output[Artifact],
+):
     import time
     from kubernetes import client as k8s_client, config as k8s_config
-    DATA = "/data"
     MODEL_NAME = "csgo-match-predictor"
 
-    with open(f"{DATA}/model_uri.txt") as f:
-        model_uri = f.read().strip()
+    with open(model_uri.path) as f:
+        uri = f.read().strip()
 
     k8s_config.load_incluster_config()
     custom_api = k8s_client.CustomObjectsApi()
@@ -293,7 +288,7 @@ def deploy(namespace: str = "csgo"):
         "spec": {
             "predictor": {
                 "sklearn": {
-                    "storageUri": model_uri,
+                    "storageUri": uri,
                     "protocolVersion": "v2",
                 }
             }
@@ -326,7 +321,7 @@ def deploy(namespace: str = "csgo"):
         if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions):
             url = isvc["status"]["url"]
             print(f"InferenceService ready at {url}")
-            with open(f"{DATA}/inference_url.txt", "w") as f:
+            with open(inference_url.path, "w") as f:
                 f.write(url)
             return
         time.sleep(5)
@@ -337,20 +332,24 @@ def deploy(namespace: str = "csgo"):
     base_image=BASE_IMAGE,
     packages_to_install=["requests==2.32.3", "pandas==2.2.3"],
 )
-def test_inference(n_samples: int = 10):
+def test_inference(
+    inference_url: Input[Artifact],
+    X_test: Input[Dataset],
+    y_test: Input[Dataset],
+    n_samples: int = 10,
+):
     import requests
     import pandas as pd
-    DATA = "/data"
     MODEL_NAME = "csgo-match-predictor"
 
-    with open(f"{DATA}/inference_url.txt") as f:
+    with open(inference_url.path) as f:
         base_url = f.read().strip()
 
-    X_test = pd.read_csv(f"{DATA}/X_test.csv", index_col=0)
-    y_test = pd.read_csv(f"{DATA}/y_test.csv", index_col=0).squeeze()
+    X = pd.read_csv(X_test.path, index_col=0)
+    y = pd.read_csv(y_test.path, index_col=0).squeeze()
 
-    sample   = X_test.sample(n_samples, random_state=42)
-    expected = y_test.loc[sample.index].tolist()
+    sample   = X.sample(n_samples, random_state=42)
+    expected = y.loc[sample.index].tolist()
 
     url      = f"{base_url}/v1/models/{MODEL_NAME}:predict"
     response = requests.post(url, json={"instances": sample.values.tolist()}, timeout=30)
@@ -369,27 +368,30 @@ def test_inference(n_samples: int = 10):
     packages_to_install=["pandas==2.2.3", "scikit-learn==1.6.1", "xgboost==3.2.0",
                          "joblib==1.5.0", "evidently==0.7.21"],
 )
-def monitoring(drift_report: Output[HTML], monitoring_metrics: Output[Metrics],
-               drift_threshold: float = 0.20):
+def monitoring(
+    X_train: Input[Dataset],
+    X_test: Input[Dataset],
+    y_test: Input[Dataset],
+    model: Input[Model],
+    drift_threshold: float,
+    drift_report: Output[Artifact],
+    monitoring_metrics: Output[Metrics],
+):
     import joblib
     import pandas as pd
     from sklearn.metrics import accuracy_score, roc_auc_score
     from evidently import Report
     from evidently.presets import DataDriftPreset
-    DATA = "/data"
 
-    reference = pd.read_csv(f"{DATA}/X_train.csv", index_col=0)
-    current   = pd.read_csv(f"{DATA}/X_test.csv",  index_col=0)
-    y_test    = pd.read_csv(f"{DATA}/y_test.csv",  index_col=0).squeeze()
-
-    print(f"Reference (train) : {len(reference)} rows")
-    print(f"Current   (test)  : {len(current)} rows")
+    reference = pd.read_csv(X_train.path, index_col=0)
+    current   = pd.read_csv(X_test.path,  index_col=0)
+    y         = pd.read_csv(y_test.path,  index_col=0).squeeze()
 
     snapshot = Report([DataDriftPreset()]).run(reference_data=reference, current_data=current)
     snapshot.save_html(drift_report.path)
 
-    metrics      = snapshot.dict()["metrics"]
-    drift_result = metrics[0]["value"]
+    metrics_data  = snapshot.dict()["metrics"]
+    drift_result  = metrics_data[0]["value"]
     share_drifted = drift_result["share"]
     n_drifted     = int(drift_result["count"])
     n_total       = len(reference.columns)
@@ -400,20 +402,17 @@ def monitoring(drift_report: Output[HTML], monitoring_metrics: Output[Metrics],
     else:
         print("No significant drift detected.")
 
-    model  = joblib.load(f"{DATA}/model.pkl")
-    y_pred = model.predict(current)
-    y_prob = model.predict_proba(current)[:, 1]
-    acc    = accuracy_score(y_test, y_pred)
-    auc    = roc_auc_score(y_test, y_prob)
+    pipeline = joblib.load(model.path)
+    y_pred = pipeline.predict(current)
+    y_prob = pipeline.predict_proba(current)[:, 1]
+    acc    = accuracy_score(y, y_pred)
+    auc    = roc_auc_score(y, y_prob)
+    print(f"Accuracy: {acc:.4f} | ROC AUC: {auc:.4f}")
 
-    print(f"\nPerformance on current data:")
-    print(f"  Accuracy : {acc:.4f}")
-    print(f"  ROC AUC  : {auc:.4f}")
-
-    monitoring_metrics.log_metric("share_drifted", share_drifted)
-    monitoring_metrics.log_metric("n_drifted_columns", float(n_drifted))
-    monitoring_metrics.log_metric("accuracy", acc)
-    monitoring_metrics.log_metric("roc_auc", auc)
+    monitoring_metrics.log_metric("share_drifted",      share_drifted)
+    monitoring_metrics.log_metric("n_drifted_columns",  float(n_drifted))
+    monitoring_metrics.log_metric("accuracy",           acc)
+    monitoring_metrics.log_metric("roc_auc",            auc)
 
 
 # ── Pipeline DAG ──────────────────────────────────────────────────────────────
@@ -426,26 +425,57 @@ def csgo_pipeline(
     drift_threshold: float = 0.20,
     mlflow_tracking_uri: str = "http://mlflow.kubeflow.svc.cluster.local:5000",
     deploy_namespace: str = "csgo",
+    n_samples: int = 10,
 ):
-    pvc  = create_pvc(namespace=deploy_namespace, storage="2Gi")
-    pull = dvc_pull().after(pvc)
-    fe   = feature_engineering().after(pull)
-    pre  = preprocessing(train_ratio=train_ratio).after(fe)
-    tr   = train(model_type=model_type).after(pre)
-    ev   = evaluate().after(tr)  # type: ignore[call-arg]
-    up   = upload_model(
+    step00 = dvc_pull()
+
+    step01 = feature_engineering(raw_data=step00.outputs["raw_data"])
+
+    step02 = preprocessing(
+        featured_data=step01.outputs["featured_data"],
+        train_ratio=train_ratio,
+    )
+
+    step03 = train(
+        X_train=step02.outputs["X_train"],
+        y_train=step02.outputs["y_train"],
+        model_type=model_type,
+    )
+
+    step04 = evaluate(
+        model=step03.outputs["model"],
+        X_test=step02.outputs["X_test"],
+        y_test=step02.outputs["y_test"],
+    )
+
+    step05 = upload_model(
+        model=step03.outputs["model"],
+        eval_results=step04.outputs["eval_results"],
         accuracy_threshold=accuracy_threshold,
         mlflow_tracking_uri=mlflow_tracking_uri,
-    ).after(ev)
-    dep  = deploy(namespace=deploy_namespace).after(up)
-    test = test_inference().after(dep)
-    mon  = monitoring(drift_threshold=drift_threshold).after(ev)  # type: ignore[call-arg]
+    )
 
-    for task in [pull, fe, pre, tr, ev, up, dep, test, mon]:
-        mount_pvc(task, pvc_name="csgo-data-pvc", mount_path="/data")
+    step06 = deploy(
+        model_uri=step05.outputs["model_uri"],
+        namespace=deploy_namespace,
+    )
 
-    # Force tous les pods sur les workers (les CP n'ont pas nfs-common)
-    for task in [pvc, pull, fe, pre, tr, ev, up, dep, test, mon]:
+    step07 = test_inference(
+        inference_url=step06.outputs["inference_url"],
+        X_test=step02.outputs["X_test"],
+        y_test=step02.outputs["y_test"],
+        n_samples=n_samples,
+    )
+
+    step08 = monitoring(
+        X_train=step02.outputs["X_train"],
+        X_test=step02.outputs["X_test"],
+        y_test=step02.outputs["y_test"],
+        model=step03.outputs["model"],
+        drift_threshold=drift_threshold,
+    )
+
+    for task in [step00, step01, step02, step03, step04, step05, step06, step07, step08]:
         add_node_selector(task, label_key="node-role.kubernetes.io/worker", label_value="worker")
 
 
