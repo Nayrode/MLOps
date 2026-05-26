@@ -11,6 +11,7 @@ Usage:
 """
 import argparse
 from kfp import compiler, dsl
+from kfp.dsl import Dataset, HTML, Input, Metrics, Model, Output
 from kfp.kubernetes import mount_pvc, add_node_selector
 
 BASE_IMAGE = "python:3.11-slim"
@@ -199,7 +200,7 @@ def train(model_type: str = "xgboost"):
     base_image=BASE_IMAGE,
     packages_to_install=["pandas==2.2.3", "scikit-learn==1.6.1", "xgboost==3.2.0", "joblib==1.5.0"],
 )
-def evaluate():
+def evaluate(eval_metrics: Output[Metrics]):
     import json
     import joblib
     import pandas as pd
@@ -213,6 +214,9 @@ def evaluate():
     acc = accuracy_score(y, pipeline.predict(X))
     auc = roc_auc_score(y, pipeline.predict_proba(X)[:, 1])
     print(f"Accuracy: {acc:.4f} | ROC AUC: {auc:.4f}")
+
+    eval_metrics.log_metric("accuracy", acc)
+    eval_metrics.log_metric("roc_auc", auc)
 
     with open(f"{DATA}/evaluation.json", "w") as f:
         json.dump({"accuracy": acc, "roc_auc": auc}, f, indent=2)
@@ -244,7 +248,7 @@ def upload_model(accuracy_threshold: float = 0.60,
     if metrics["accuracy"] < accuracy_threshold:
         raise ValueError(f"Accuracy {metrics['accuracy']:.4f} below threshold {accuracy_threshold}")
 
-    with mlflow.start_run(run_name="kubeflow-pipeline") as run:
+    with mlflow.start_run(run_name="kubeflow-pipeline"):
         mlflow.log_metrics(metrics)
         mlflow.log_params({"model_type": type(model.named_steps["classifier"]).__name__})
         info = mlflow.sklearn.log_model(
@@ -365,10 +369,10 @@ def test_inference(n_samples: int = 10):
     packages_to_install=["pandas==2.2.3", "scikit-learn==1.6.1", "xgboost==3.2.0",
                          "joblib==1.5.0", "evidently==0.7.21"],
 )
-def monitoring(drift_threshold: float = 0.20):
+def monitoring(drift_report: Output[HTML], monitoring_metrics: Output[Metrics],
+               drift_threshold: float = 0.20):
     import joblib
     import pandas as pd
-    from pathlib import Path
     from sklearn.metrics import accuracy_score, roc_auc_score
     from evidently import Report
     from evidently.presets import DataDriftPreset
@@ -378,14 +382,14 @@ def monitoring(drift_threshold: float = 0.20):
     current   = pd.read_csv(f"{DATA}/X_test.csv",  index_col=0)
     y_test    = pd.read_csv(f"{DATA}/y_test.csv",  index_col=0).squeeze()
 
-    report_dir = Path(f"{DATA}/reports")
-    report_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Reference (train) : {len(reference)} rows")
+    print(f"Current   (test)  : {len(current)} rows")
 
     snapshot = Report([DataDriftPreset()]).run(reference_data=reference, current_data=current)
-    snapshot.save_html(str(report_dir / "drift_report.html"))
+    snapshot.save_html(drift_report.path)
 
-    metrics       = snapshot.dict()["metrics"]
-    drift_result  = metrics[0]["value"]
+    metrics      = snapshot.dict()["metrics"]
+    drift_result = metrics[0]["value"]
     share_drifted = drift_result["share"]
     n_drifted     = int(drift_result["count"])
     n_total       = len(reference.columns)
@@ -401,7 +405,15 @@ def monitoring(drift_threshold: float = 0.20):
     y_prob = model.predict_proba(current)[:, 1]
     acc    = accuracy_score(y_test, y_pred)
     auc    = roc_auc_score(y_test, y_prob)
-    print(f"Accuracy: {acc:.4f} | ROC AUC: {auc:.4f}")
+
+    print(f"\nPerformance on current data:")
+    print(f"  Accuracy : {acc:.4f}")
+    print(f"  ROC AUC  : {auc:.4f}")
+
+    monitoring_metrics.log_metric("share_drifted", share_drifted)
+    monitoring_metrics.log_metric("n_drifted_columns", float(n_drifted))
+    monitoring_metrics.log_metric("accuracy", acc)
+    monitoring_metrics.log_metric("roc_auc", auc)
 
 
 # ── Pipeline DAG ──────────────────────────────────────────────────────────────
@@ -420,14 +432,14 @@ def csgo_pipeline(
     fe   = feature_engineering().after(pull)
     pre  = preprocessing(train_ratio=train_ratio).after(fe)
     tr   = train(model_type=model_type).after(pre)
-    ev   = evaluate().after(tr)
+    ev   = evaluate().after(tr)  # type: ignore[call-arg]
     up   = upload_model(
         accuracy_threshold=accuracy_threshold,
         mlflow_tracking_uri=mlflow_tracking_uri,
     ).after(ev)
     dep  = deploy(namespace=deploy_namespace).after(up)
     test = test_inference().after(dep)
-    mon  = monitoring(drift_threshold=drift_threshold).after(ev)
+    mon  = monitoring(drift_threshold=drift_threshold).after(ev)  # type: ignore[call-arg]
 
     for task in [pull, fe, pre, tr, ev, up, dep, test, mon]:
         mount_pvc(task, pvc_name="csgo-data-pvc", mount_path="/data")
@@ -435,7 +447,6 @@ def csgo_pipeline(
     # Force tous les pods sur les workers (les CP n'ont pas nfs-common)
     for task in [pvc, pull, fe, pre, tr, ev, up, dep, test, mon]:
         add_node_selector(task, label_key="node-role.kubernetes.io/worker", label_value="worker")
-
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────

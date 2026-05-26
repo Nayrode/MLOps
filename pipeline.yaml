@@ -32,6 +32,12 @@ components:
     executorLabel: exec-dvc-pull
   comp-evaluate:
     executorLabel: exec-evaluate
+    outputDefinitions:
+      artifacts:
+        eval_metrics:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
   comp-feature-engineering:
     executorLabel: exec-feature-engineering
   comp-monitoring:
@@ -42,6 +48,16 @@ components:
           defaultValue: 0.2
           isOptional: true
           parameterType: NUMBER_DOUBLE
+    outputDefinitions:
+      artifacts:
+        drift_report:
+          artifactType:
+            schemaTitle: system.HTML
+            schemaVersion: 0.0.1
+        monitoring_metrics:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
   comp-preprocessing:
     executorLabel: exec-preprocessing
     inputDefinitions:
@@ -241,15 +257,17 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef evaluate():\n    import json\n    import joblib\n    import pandas\
-          \ as pd\n    from sklearn.metrics import accuracy_score, roc_auc_score\n\
-          \    DATA = \"/data\"\n\n    pipeline = joblib.load(f\"{DATA}/model.pkl\"\
-          )\n    X = pd.read_csv(f\"{DATA}/X_test.csv\", index_col=0)\n    y = pd.read_csv(f\"\
-          {DATA}/y_test.csv\", index_col=0).squeeze()\n\n    acc = accuracy_score(y,\
-          \ pipeline.predict(X))\n    auc = roc_auc_score(y, pipeline.predict_proba(X)[:,\
-          \ 1])\n    print(f\"Accuracy: {acc:.4f} | ROC AUC: {auc:.4f}\")\n\n    with\
-          \ open(f\"{DATA}/evaluation.json\", \"w\") as f:\n        json.dump({\"\
-          accuracy\": acc, \"roc_auc\": auc}, f, indent=2)\n\n"
+          \ *\n\ndef evaluate(eval_metrics: Output[Metrics]):\n    import json\n \
+          \   import joblib\n    import pandas as pd\n    from sklearn.metrics import\
+          \ accuracy_score, roc_auc_score\n    DATA = \"/data\"\n\n    pipeline =\
+          \ joblib.load(f\"{DATA}/model.pkl\")\n    X = pd.read_csv(f\"{DATA}/X_test.csv\"\
+          , index_col=0)\n    y = pd.read_csv(f\"{DATA}/y_test.csv\", index_col=0).squeeze()\n\
+          \n    acc = accuracy_score(y, pipeline.predict(X))\n    auc = roc_auc_score(y,\
+          \ pipeline.predict_proba(X)[:, 1])\n    print(f\"Accuracy: {acc:.4f} | ROC\
+          \ AUC: {auc:.4f}\")\n\n    eval_metrics.log_metric(\"accuracy\", acc)\n\
+          \    eval_metrics.log_metric(\"roc_auc\", auc)\n\n    with open(f\"{DATA}/evaluation.json\"\
+          , \"w\") as f:\n        json.dump({\"accuracy\": acc, \"roc_auc\": auc},\
+          \ f, indent=2)\n\n"
         image: python:3.11-slim
     exec-feature-engineering:
       container:
@@ -355,26 +373,31 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef monitoring(drift_threshold: float = 0.20):\n    import joblib\n\
-          \    import pandas as pd\n    from pathlib import Path\n    from sklearn.metrics\
-          \ import accuracy_score, roc_auc_score\n    from evidently import Report\n\
-          \    from evidently.presets import DataDriftPreset\n    DATA = \"/data\"\
-          \n\n    reference = pd.read_csv(f\"{DATA}/X_train.csv\", index_col=0)\n\
-          \    current   = pd.read_csv(f\"{DATA}/X_test.csv\",  index_col=0)\n   \
-          \ y_test    = pd.read_csv(f\"{DATA}/y_test.csv\",  index_col=0).squeeze()\n\
-          \n    report_dir = Path(f\"{DATA}/reports\")\n    report_dir.mkdir(parents=True,\
-          \ exist_ok=True)\n\n    snapshot = Report([DataDriftPreset()]).run(reference_data=reference,\
-          \ current_data=current)\n    snapshot.save_html(str(report_dir / \"drift_report.html\"\
-          ))\n\n    metrics       = snapshot.dict()[\"metrics\"]\n    drift_result\
-          \  = metrics[0][\"value\"]\n    share_drifted = drift_result[\"share\"]\n\
-          \    n_drifted     = int(drift_result[\"count\"])\n    n_total       = len(reference.columns)\n\
+          \ *\n\ndef monitoring(drift_report: Output[HTML], monitoring_metrics: Output[Metrics],\n\
+          \               drift_threshold: float = 0.20):\n    import joblib\n   \
+          \ import pandas as pd\n    from sklearn.metrics import accuracy_score, roc_auc_score\n\
+          \    from evidently import Report\n    from evidently.presets import DataDriftPreset\n\
+          \    DATA = \"/data\"\n\n    reference = pd.read_csv(f\"{DATA}/X_train.csv\"\
+          , index_col=0)\n    current   = pd.read_csv(f\"{DATA}/X_test.csv\",  index_col=0)\n\
+          \    y_test    = pd.read_csv(f\"{DATA}/y_test.csv\",  index_col=0).squeeze()\n\
+          \n    print(f\"Reference (train) : {len(reference)} rows\")\n    print(f\"\
+          Current   (test)  : {len(current)} rows\")\n\n    snapshot = Report([DataDriftPreset()]).run(reference_data=reference,\
+          \ current_data=current)\n    snapshot.save_html(drift_report.path)\n\n \
+          \   metrics      = snapshot.dict()[\"metrics\"]\n    drift_result = metrics[0][\"\
+          value\"]\n    share_drifted = drift_result[\"share\"]\n    n_drifted   \
+          \  = int(drift_result[\"count\"])\n    n_total       = len(reference.columns)\n\
           \n    print(f\"Drifted columns: {n_drifted}/{n_total} ({share_drifted:.1%})\"\
           )\n    if share_drifted > drift_threshold:\n        print(f\"ALERT: drift\
           \ {share_drifted:.1%} exceeds threshold {drift_threshold:.1%}\")\n    else:\n\
           \        print(\"No significant drift detected.\")\n\n    model  = joblib.load(f\"\
           {DATA}/model.pkl\")\n    y_pred = model.predict(current)\n    y_prob = model.predict_proba(current)[:,\
           \ 1]\n    acc    = accuracy_score(y_test, y_pred)\n    auc    = roc_auc_score(y_test,\
-          \ y_prob)\n    print(f\"Accuracy: {acc:.4f} | ROC AUC: {auc:.4f}\")\n\n"
+          \ y_prob)\n\n    print(f\"\\nPerformance on current data:\")\n    print(f\"\
+          \  Accuracy : {acc:.4f}\")\n    print(f\"  ROC AUC  : {auc:.4f}\")\n\n \
+          \   monitoring_metrics.log_metric(\"share_drifted\", share_drifted)\n  \
+          \  monitoring_metrics.log_metric(\"n_drifted_columns\", float(n_drifted))\n\
+          \    monitoring_metrics.log_metric(\"accuracy\", acc)\n    monitoring_metrics.log_metric(\"\
+          roc_auc\", auc)\n\n"
         image: python:3.11-slim
     exec-preprocessing:
       container:
@@ -542,8 +565,8 @@ deploymentSpec:
           \n    print(f\"Accuracy: {metrics['accuracy']:.4f} | AUC: {metrics['roc_auc']:.4f}\"\
           )\n    if metrics[\"accuracy\"] < accuracy_threshold:\n        raise ValueError(f\"\
           Accuracy {metrics['accuracy']:.4f} below threshold {accuracy_threshold}\"\
-          )\n\n    with mlflow.start_run(run_name=\"kubeflow-pipeline\") as run:\n\
-          \        mlflow.log_metrics(metrics)\n        mlflow.log_params({\"model_type\"\
+          )\n\n    with mlflow.start_run(run_name=\"kubeflow-pipeline\"):\n      \
+          \  mlflow.log_metrics(metrics)\n        mlflow.log_params({\"model_type\"\
           : type(model.named_steps[\"classifier\"]).__name__})\n        info = mlflow.sklearn.log_model(\n\
           \            model,\n            artifact_path=\"model\",\n            registered_model_name=MODEL_NAME,\n\
           \        )\n        model_uri = info.model_uri\n\n    client = MlflowClient(tracking_uri=mlflow_tracking_uri)\n\
