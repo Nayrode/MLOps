@@ -129,10 +129,11 @@ uv run python pipeline.py
 ### 3 — Upload and run
 
 ```bash
-kubectl port-forward svc/ml-pipeline-ui 3000:80 -n kubeflow
+kubectl port-forward -n istio-system svc/istio-ingressgateway 8080:80
+#ids ==> csgo@example.com : ***
 ```
 
-Open `http://localhost:3000`, then:
+Open `http://localhost:8080`, then:
 
 - **Pipelines** → **Upload pipeline** → select `pipeline.yaml`
 - **Create run** → leave default parameters → **Start**

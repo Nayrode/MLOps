@@ -363,7 +363,7 @@ def test_inference(n_samples: int = 10):
 @dsl.component(
     base_image=BASE_IMAGE,
     packages_to_install=["pandas==2.2.3", "scikit-learn==1.6.1", "xgboost==3.2.0",
-                         "joblib==1.5.0", "evidently==0.5.0"],
+                         "joblib==1.5.0", "evidently==0.7.21"],
 )
 def monitoring(drift_threshold: float = 0.20):
     import joblib
