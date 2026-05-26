@@ -125,7 +125,7 @@ print(f"Model saved → s3://{os.environ['S3_BUCKET']}/{os.environ['MODEL_KEY']}
     custom_api = k8s.CustomObjectsApi()
 
     gpu_patch = {
-        "manager": "test-trainjob",
+        "manager": "csgo.io/train",
         "trainingRuntimeSpec": {
             "template": {
                 "spec": {
@@ -144,13 +144,6 @@ print(f"Model saved → s3://{os.environ['S3_BUCKET']}/{os.environ['MODEL_KEY']}
                                         "nodeSelector": {
                                             "node-role.kubernetes.io/gpu": "true",
                                         },
-                                        "containers": [{
-                                            "name": "node",
-                                            "resources": {
-                                                "requests": {"nvidia.com/gpu": "1"},
-                                                "limits":   {"nvidia.com/gpu": "1"},
-                                            },
-                                        }],
                                     }
                                 }
                             }
@@ -176,6 +169,10 @@ print(f"Model saved → s3://{os.environ['S3_BUCKET']}/{os.environ['MODEL_KEY']}
                 "image": "python:3.11-slim",
                 "command": ["python", "-c", training_script],
                 "numNodes": 1,
+                "resourcesPerNode": {
+                    "requests": {"nvidia.com/gpu": "1"},
+                    "limits":   {"nvidia.com/gpu": "1"},
+                },
                 "env": [
                     {"name": "S3_ENDPOINT",           "value": s3_endpoint_cluster},
                     {"name": "S3_BUCKET",             "value": S3_BUCKET},

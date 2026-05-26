@@ -193,9 +193,13 @@ def train(
     x_uri = X_train.uri.replace("minio://", "s3://")
     y_uri = y_train.uri.replace("minio://", "s3://")
 
-    ts        = int(time.time())
-    model_key = f"csgo/models/{ts}/model.pkl"
-    job_name  = f"csgo-train-{ts}"
+    ts       = int(time.time())
+    job_name = f"csgo-train-{ts}"
+
+    # Upload directement vers model.uri (private-artifacts/) — les creds ont accès en écriture là.
+    # minio:// → s3:// pour boto3
+    model_uri = model.uri.replace("minio://", "s3://")
+    model_bucket, model_s3_key = model_uri.replace("s3://", "").split("/", 1)
 
     training_script = """\
 import subprocess, sys
@@ -243,15 +247,15 @@ print(f"Train accuracy: {pipeline.score(X, y):.4f}")
 
 with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
     joblib.dump(pipeline, f.name)
-    s3.upload_file(f.name, os.environ["S3_BUCKET"], os.environ["MODEL_KEY"])
-print(f"Model saved → s3://{os.environ['S3_BUCKET']}/{os.environ['MODEL_KEY']}")
+    s3.upload_file(f.name, os.environ["MODEL_BUCKET"], os.environ["MODEL_KEY"])
+print(f"Model saved → s3://{os.environ['MODEL_BUCKET']}/{os.environ['MODEL_KEY']}")
 """
 
     k8s_config.load_incluster_config()
     custom_api = k8s.CustomObjectsApi()
 
     gpu_patch = {
-        "manager": "pipeline-train-component",
+        "manager": "csgo.io/train",
         "trainingRuntimeSpec": {
             "template": {
                 "spec": {
@@ -270,13 +274,6 @@ print(f"Model saved → s3://{os.environ['S3_BUCKET']}/{os.environ['MODEL_KEY']}
                                         "nodeSelector": {
                                             "node-role.kubernetes.io/gpu": "true",
                                         },
-                                        "containers": [{
-                                            "name": "node",
-                                            "resources": {
-                                                "requests": {"nvidia.com/gpu": "1"},
-                                                "limits":   {"nvidia.com/gpu": "1"},
-                                            },
-                                        }],
                                     }
                                 }
                             }
@@ -302,6 +299,10 @@ print(f"Model saved → s3://{os.environ['S3_BUCKET']}/{os.environ['MODEL_KEY']}
                 "image": "python:3.11-slim",
                 "command": ["python", "-c", training_script],
                 "numNodes": 1,
+                "resourcesPerNode": {
+                    "requests": {"nvidia.com/gpu": "1"},
+                    "limits":   {"nvidia.com/gpu": "1"},
+                },
                 "env": [
                     {"name": "S3_ENDPOINT",           "value": s3_endpoint},
                     {"name": "S3_BUCKET",             "value": s3_bucket},
@@ -309,7 +310,8 @@ print(f"Model saved → s3://{os.environ['S3_BUCKET']}/{os.environ['MODEL_KEY']}
                     {"name": "AWS_SECRET_ACCESS_KEY", "value": s3_secret},
                     {"name": "X_URI",                 "value": x_uri},
                     {"name": "Y_URI",                 "value": y_uri},
-                    {"name": "MODEL_KEY",             "value": model_key},
+                    {"name": "MODEL_BUCKET",          "value": model_bucket},
+                    {"name": "MODEL_KEY",             "value": model_s3_key},
                     {"name": "N_ESTIMATORS",          "value": str(n_estimators)},
                     {"name": "LEARNING_RATE",         "value": str(learning_rate)},
                     {"name": "MAX_DEPTH",             "value": str(max_depth)},
@@ -348,9 +350,11 @@ print(f"Model saved → s3://{os.environ['S3_BUCKET']}/{os.environ['MODEL_KEY']}
     else:
         raise TimeoutError(f"TrainJob '{job_name}' timeout après {timeout}s.")
 
+    # Le TrainJob a uploadé vers model.uri via S3, mais le FUSE local ne le voit pas.
+    # On re-télécharge vers model.path pour que KFP trouve le fichier.
     s3 = boto3.client("s3", endpoint_url=s3_endpoint,
                       aws_access_key_id=s3_key_id, aws_secret_access_key=s3_secret)
-    s3.download_file(s3_bucket, model_key, model.path)
+    s3.download_file(model_bucket, model_s3_key, model.path)
     print(f"Model artifact → {model.path}")
 
 
@@ -387,27 +391,26 @@ def evaluate(
 
 @dsl.component(
     base_image=BASE_IMAGE,
-    packages_to_install=["mlflow==3.12.0", "scikit-learn==1.8.0", "xgboost==3.2.0",
-                         "joblib==1.5.3", "boto3==1.43.14"],
+    packages_to_install=["boto3==1.43.14", "requests==2.32.3"],
 )
 def upload_model(
     model: Input[Model],
     eval_results: Input[Artifact],
     accuracy_threshold: float,
-    mlflow_tracking_uri: str,
+    s3_endpoint: str,
     model_registry_url: str,
     model_uri: Output[Artifact],
 ):
     import json
-    import joblib
-    import mlflow
-    import mlflow.sklearn
+    import os
+    import uuid
+    import boto3
     import requests as http
 
     MODEL_NAME = "csgo-match-predictor"
+    BUCKET = "mlpipeline"
     MR_API = f"{model_registry_url}/api/model_registry/v1alpha3"
 
-    pipeline = joblib.load(model.path)
     with open(eval_results.path) as f:
         metrics_data = json.load(f)
 
@@ -415,16 +418,17 @@ def upload_model(
     if metrics_data["accuracy"] < accuracy_threshold:
         raise ValueError(f"Accuracy {metrics_data['accuracy']:.4f} below threshold {accuracy_threshold}")
 
-    # Store artifact via MLflow, retrieve actual S3 URI
-    mlflow.set_tracking_uri(mlflow_tracking_uri)
-    mlflow.set_experiment(MODEL_NAME)
-    with mlflow.start_run(run_name="kubeflow-pipeline") as run:
-        mlflow.log_metrics(metrics_data)
-        mlflow.log_params({"model_type": type(pipeline.named_steps["classifier"]).__name__})
-        mlflow.sklearn.log_model(pipeline, artifact_path="model")
-        artifact_uri = mlflow.get_artifact_uri("model")
-
-    version_name = run.info.run_id[:8]
+    version_name = uuid.uuid4().hex[:8]
+    s3_key = f"private-artifacts/csgo/models/{MODEL_NAME}/{version_name}/model.joblib"
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=s3_endpoint,
+        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+    )
+    s3.upload_file(model.path, BUCKET, s3_key)
+    artifact_uri = f"s3://{BUCKET}/{s3_key}"
+    print(f"Uploaded model → {artifact_uri}")
 
     # Create or retrieve RegisteredModel
     resp = http.post(
@@ -432,13 +436,16 @@ def upload_model(
         json={"name": MODEL_NAME, "description": "CS:GO match predictor"},
         timeout=30,
     )
+    print(f"POST registered_models → {resp.status_code}: {resp.text}")
     if resp.status_code == 409:
         resp = http.get(f"{MR_API}/registered_models", timeout=30)
         resp.raise_for_status()
+        print(f"GET registered_models → {resp.status_code}: {resp.text}")
         rm_id = next(rm["id"] for rm in resp.json()["items"] if rm["name"] == MODEL_NAME)
     else:
         resp.raise_for_status()
         rm_id = resp.json()["id"]
+    print(f"RegisteredModel id={rm_id}")
 
     # Create ModelVersion with evaluation metrics as custom properties
     mv_resp = http.post(
@@ -453,8 +460,10 @@ def upload_model(
         },
         timeout=30,
     )
+    print(f"POST model_versions → {mv_resp.status_code}: {mv_resp.text}")
     mv_resp.raise_for_status()
     mv_id = mv_resp.json()["id"]
+    print(f"ModelVersion id={mv_id}")
 
     # Link artifact URI to the model version
     ma_resp = http.post(
@@ -467,6 +476,7 @@ def upload_model(
         },
         timeout=30,
     )
+    print(f"POST model_versions/{mv_id}/artifacts → {ma_resp.status_code}: {ma_resp.text}")
     ma_resp.raise_for_status()
 
     print(f"Registered '{MODEL_NAME}' version '{version_name}' (id={mv_id}) → {artifact_uri}")
@@ -636,7 +646,7 @@ def csgo_pipeline(
     train_ratio: float = 0.8,
     accuracy_threshold: float = 0.60,
     drift_threshold: float = 0.20,
-    mlflow_tracking_uri: str = "http://mlflow.kubeflow.svc.cluster.local:5000",
+    s3_endpoint: str = "http://seaweedfs.kubeflow.svc.cluster.local:8333",
     model_registry_url: str = "http://model-registry-service.csgo.svc.cluster.local:8080",
     deploy_namespace: str = "csgo",
     n_samples: int = 10,
@@ -667,7 +677,7 @@ def csgo_pipeline(
         model=step03.outputs["model"],
         eval_results=step04.outputs["eval_results"],
         accuracy_threshold=accuracy_threshold,
-        mlflow_tracking_uri=mlflow_tracking_uri,
+        s3_endpoint=s3_endpoint,
         model_registry_url=model_registry_url,
     )
 

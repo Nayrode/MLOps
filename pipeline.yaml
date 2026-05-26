@@ -4,10 +4,10 @@
 #    accuracy_threshold: float [Default: 0.6]
 #    deploy_namespace: str [Default: 'csgo']
 #    drift_threshold: float [Default: 0.2]
-#    mlflow_tracking_uri: str [Default: 'http://mlflow.kubeflow.svc.cluster.local:5000']
 #    model_registry_url: str [Default: 'http://model-registry-service.csgo.svc.cluster.local:8080']
 #    model_type: str [Default: 'xgboost']
 #    n_samples: int [Default: 10.0]
+#    s3_endpoint: str [Default: 'http://seaweedfs.kubeflow.svc.cluster.local:8333']
 #    train_ratio: float [Default: 0.8]
 components:
   comp-deploy:
@@ -218,9 +218,9 @@ components:
       parameters:
         accuracy_threshold:
           parameterType: NUMBER_DOUBLE
-        mlflow_tracking_uri:
-          parameterType: STRING
         model_registry_url:
+          parameterType: STRING
+        s3_endpoint:
           parameterType: STRING
     outputDefinitions:
       artifacts:
@@ -610,11 +610,14 @@ deploymentSpec:
           \ s3_secret  = os.environ.get(\"AWS_SECRET_ACCESS_KEY\", \"minio123\")\n\
           \n    # KFP artifact URIs use minio:// scheme \u2014 convert to s3:// for\
           \ boto3.\n    x_uri = X_train.uri.replace(\"minio://\", \"s3://\")\n   \
-          \ y_uri = y_train.uri.replace(\"minio://\", \"s3://\")\n\n    ts       \
-          \ = int(time.time())\n    model_key = f\"csgo/models/{ts}/model.pkl\"\n\
-          \    job_name  = f\"csgo-train-{ts}\"\n\n    training_script = \"\"\"\\\n\
-          import subprocess, sys\nsubprocess.check_call([sys.executable, \"-m\", \"\
-          pip\", \"install\", \"-q\",\n    \"pandas==2.2.3\", \"scikit-learn==1.8.0\"\
+          \ y_uri = y_train.uri.replace(\"minio://\", \"s3://\")\n\n    ts       =\
+          \ int(time.time())\n    job_name = f\"csgo-train-{ts}\"\n\n    # Upload\
+          \ directement vers model.uri (private-artifacts/) \u2014 les creds ont acc\xE8\
+          s en \xE9criture l\xE0.\n    # minio:// \u2192 s3:// pour boto3\n    model_uri\
+          \ = model.uri.replace(\"minio://\", \"s3://\")\n    model_bucket, model_s3_key\
+          \ = model_uri.replace(\"s3://\", \"\").split(\"/\", 1)\n\n    training_script\
+          \ = \"\"\"\\\nimport subprocess, sys\nsubprocess.check_call([sys.executable,\
+          \ \"-m\", \"pip\", \"install\", \"-q\",\n    \"pandas==2.2.3\", \"scikit-learn==1.8.0\"\
           , \"xgboost==3.2.0\",\n    \"joblib==1.5.3\", \"boto3==1.43.14\"])\nimport\
           \ io, os, tempfile, boto3, joblib, pandas as pd\nfrom sklearn.compose import\
           \ ColumnTransformer\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.preprocessing\
@@ -637,49 +640,46 @@ deploymentSpec:
           logloss\", random_state=42, device=\"cuda\",\n    )),\n])\npipeline.fit(X,\
           \ y)\nprint(f\"Train accuracy: {pipeline.score(X, y):.4f}\")\n\nwith tempfile.NamedTemporaryFile(suffix=\"\
           .pkl\", delete=False) as f:\n    joblib.dump(pipeline, f.name)\n    s3.upload_file(f.name,\
-          \ os.environ[\"S3_BUCKET\"], os.environ[\"MODEL_KEY\"])\nprint(f\"Model\
-          \ saved \u2192 s3://{os.environ['S3_BUCKET']}/{os.environ['MODEL_KEY']}\"\
+          \ os.environ[\"MODEL_BUCKET\"], os.environ[\"MODEL_KEY\"])\nprint(f\"Model\
+          \ saved \u2192 s3://{os.environ['MODEL_BUCKET']}/{os.environ['MODEL_KEY']}\"\
           )\n\"\"\"\n\n    k8s_config.load_incluster_config()\n    custom_api = k8s.CustomObjectsApi()\n\
-          \n    gpu_patch = {\n        \"manager\": \"pipeline-train-component\",\n\
-          \        \"trainingRuntimeSpec\": {\n            \"template\": {\n     \
-          \           \"spec\": {\n                    \"replicatedJobs\": [{\n  \
-          \                      \"name\": \"node\",\n                        \"template\"\
-          : {\n                            \"spec\": {\n                         \
-          \       \"template\": {\n                                    \"spec\": {\n\
-          \                                        \"tolerations\": [{\n         \
-          \                                   \"key\": \"nvidia.com/gpu\",\n     \
-          \                                       \"operator\": \"Equal\",\n     \
-          \                                       \"value\": \"present\",\n      \
-          \                                      \"effect\": \"NoSchedule\",\n   \
-          \                                     }],\n                            \
-          \            \"nodeSelector\": {\n                                     \
-          \       \"node-role.kubernetes.io/gpu\": \"true\",\n                   \
-          \                     },\n                                        \"containers\"\
-          : [{\n                                            \"name\": \"node\",\n\
-          \                                            \"resources\": {\n        \
-          \                                        \"requests\": {\"nvidia.com/gpu\"\
-          : \"1\"},\n                                                \"limits\": \
-          \  {\"nvidia.com/gpu\": \"1\"},\n                                      \
-          \      },\n                                        }],\n               \
-          \                     }\n                                }\n           \
-          \                 }\n                        }\n                    }]\n\
-          \                }\n            }\n        },\n    }\n\n    body = {\n \
-          \       \"apiVersion\": \"trainer.kubeflow.org/v1alpha1\",\n        \"kind\"\
-          : \"TrainJob\",\n        \"metadata\": {\"name\": job_name, \"namespace\"\
-          : namespace},\n        \"spec\": {\n            \"runtimeRef\": {\n    \
-          \            \"apiGroup\": \"trainer.kubeflow.org\",\n                \"\
-          kind\": \"ClusterTrainingRuntime\",\n                \"name\": \"xgboost-distributed\"\
-          ,\n            },\n            \"runtimePatches\": [gpu_patch],\n      \
-          \      \"trainer\": {\n                \"image\": \"python:3.11-slim\",\n\
-          \                \"command\": [\"python\", \"-c\", training_script],\n \
-          \               \"numNodes\": 1,\n                \"env\": [\n         \
-          \           {\"name\": \"S3_ENDPOINT\",           \"value\": s3_endpoint},\n\
-          \                    {\"name\": \"S3_BUCKET\",             \"value\": s3_bucket},\n\
-          \                    {\"name\": \"AWS_ACCESS_KEY_ID\",     \"value\": s3_key_id},\n\
+          \n    gpu_patch = {\n        \"manager\": \"csgo.io/train\",\n        \"\
+          trainingRuntimeSpec\": {\n            \"template\": {\n                \"\
+          spec\": {\n                    \"replicatedJobs\": [{\n                \
+          \        \"name\": \"node\",\n                        \"template\": {\n\
+          \                            \"spec\": {\n                             \
+          \   \"template\": {\n                                    \"spec\": {\n \
+          \                                       \"tolerations\": [{\n          \
+          \                                  \"key\": \"nvidia.com/gpu\",\n      \
+          \                                      \"operator\": \"Equal\",\n      \
+          \                                      \"value\": \"present\",\n       \
+          \                                     \"effect\": \"NoSchedule\",\n    \
+          \                                    }],\n                             \
+          \           \"nodeSelector\": {\n                                      \
+          \      \"node-role.kubernetes.io/gpu\": \"true\",\n                    \
+          \                    },\n                                    }\n       \
+          \                         }\n                            }\n           \
+          \             }\n                    }]\n                }\n           \
+          \ }\n        },\n    }\n\n    body = {\n        \"apiVersion\": \"trainer.kubeflow.org/v1alpha1\"\
+          ,\n        \"kind\": \"TrainJob\",\n        \"metadata\": {\"name\": job_name,\
+          \ \"namespace\": namespace},\n        \"spec\": {\n            \"runtimeRef\"\
+          : {\n                \"apiGroup\": \"trainer.kubeflow.org\",\n         \
+          \       \"kind\": \"ClusterTrainingRuntime\",\n                \"name\"\
+          : \"xgboost-distributed\",\n            },\n            \"runtimePatches\"\
+          : [gpu_patch],\n            \"trainer\": {\n                \"image\": \"\
+          python:3.11-slim\",\n                \"command\": [\"python\", \"-c\", training_script],\n\
+          \                \"numNodes\": 1,\n                \"resourcesPerNode\"\
+          : {\n                    \"requests\": {\"nvidia.com/gpu\": \"1\"},\n  \
+          \                  \"limits\":   {\"nvidia.com/gpu\": \"1\"},\n        \
+          \        },\n                \"env\": [\n                    {\"name\":\
+          \ \"S3_ENDPOINT\",           \"value\": s3_endpoint},\n                \
+          \    {\"name\": \"S3_BUCKET\",             \"value\": s3_bucket},\n    \
+          \                {\"name\": \"AWS_ACCESS_KEY_ID\",     \"value\": s3_key_id},\n\
           \                    {\"name\": \"AWS_SECRET_ACCESS_KEY\", \"value\": s3_secret},\n\
           \                    {\"name\": \"X_URI\",                 \"value\": x_uri},\n\
           \                    {\"name\": \"Y_URI\",                 \"value\": y_uri},\n\
-          \                    {\"name\": \"MODEL_KEY\",             \"value\": model_key},\n\
+          \                    {\"name\": \"MODEL_BUCKET\",          \"value\": model_bucket},\n\
+          \                    {\"name\": \"MODEL_KEY\",             \"value\": model_s3_key},\n\
           \                    {\"name\": \"N_ESTIMATORS\",          \"value\": str(n_estimators)},\n\
           \                    {\"name\": \"LEARNING_RATE\",         \"value\": str(learning_rate)},\n\
           \                    {\"name\": \"MAX_DEPTH\",             \"value\": str(max_depth)},\n\
@@ -702,10 +702,12 @@ deploymentSpec:
           .\")\n        else:\n            time.sleep(interval)\n            elapsed\
           \ += interval\n            continue\n        break\n    else:\n        raise\
           \ TimeoutError(f\"TrainJob '{job_name}' timeout apr\xE8s {timeout}s.\")\n\
-          \n    s3 = boto3.client(\"s3\", endpoint_url=s3_endpoint,\n            \
-          \          aws_access_key_id=s3_key_id, aws_secret_access_key=s3_secret)\n\
-          \    s3.download_file(s3_bucket, model_key, model.path)\n    print(f\"Model\
-          \ artifact \u2192 {model.path}\")\n\n"
+          \n    # Le TrainJob a upload\xE9 vers model.uri via S3, mais le FUSE local\
+          \ ne le voit pas.\n    # On re-t\xE9l\xE9charge vers model.path pour que\
+          \ KFP trouve le fichier.\n    s3 = boto3.client(\"s3\", endpoint_url=s3_endpoint,\n\
+          \                      aws_access_key_id=s3_key_id, aws_secret_access_key=s3_secret)\n\
+          \    s3.download_file(model_bucket, model_s3_key, model.path)\n    print(f\"\
+          Model artifact \u2192 {model.path}\")\n\n"
         image: python:3.11-slim
     exec-upload-model:
       container:
@@ -719,11 +721,10 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow==3.12.0'\
-          \ 'scikit-learn==1.8.0' 'xgboost==3.2.0' 'joblib==1.5.3' 'boto3==1.43.14'\
-          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
-          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
-          $0\" \"$@\"\n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'boto3==1.43.14'\
+          \ 'requests==2.32.3'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -736,42 +737,49 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef upload_model(\n    model: Input[Model],\n    eval_results: Input[Artifact],\n\
-          \    accuracy_threshold: float,\n    mlflow_tracking_uri: str,\n    model_registry_url:\
+          \    accuracy_threshold: float,\n    s3_endpoint: str,\n    model_registry_url:\
           \ str,\n    model_uri: Output[Artifact],\n):\n    import json\n    import\
-          \ joblib\n    import mlflow\n    import mlflow.sklearn\n    import requests\
-          \ as http\n\n    MODEL_NAME = \"csgo-match-predictor\"\n    MR_API = f\"\
-          {model_registry_url}/api/model_registry/v1alpha3\"\n\n    pipeline = joblib.load(model.path)\n\
+          \ os\n    import uuid\n    import boto3\n    import requests as http\n\n\
+          \    MODEL_NAME = \"csgo-match-predictor\"\n    BUCKET = \"mlpipeline\"\n\
+          \    MR_API = f\"{model_registry_url}/api/model_registry/v1alpha3\"\n\n\
           \    with open(eval_results.path) as f:\n        metrics_data = json.load(f)\n\
           \n    print(f\"Accuracy: {metrics_data['accuracy']:.4f} | AUC: {metrics_data['roc_auc']:.4f}\"\
           )\n    if metrics_data[\"accuracy\"] < accuracy_threshold:\n        raise\
           \ ValueError(f\"Accuracy {metrics_data['accuracy']:.4f} below threshold\
-          \ {accuracy_threshold}\")\n\n    # Store artifact via MLflow, retrieve actual\
-          \ S3 URI\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n    mlflow.set_experiment(MODEL_NAME)\n\
-          \    with mlflow.start_run(run_name=\"kubeflow-pipeline\") as run:\n   \
-          \     mlflow.log_metrics(metrics_data)\n        mlflow.log_params({\"model_type\"\
-          : type(pipeline.named_steps[\"classifier\"]).__name__})\n        mlflow.sklearn.log_model(pipeline,\
-          \ artifact_path=\"model\")\n        artifact_uri = mlflow.get_artifact_uri(\"\
-          model\")\n\n    version_name = run.info.run_id[:8]\n\n    # Create or retrieve\
-          \ RegisteredModel\n    resp = http.post(\n        f\"{MR_API}/registered_models\"\
-          ,\n        json={\"name\": MODEL_NAME, \"description\": \"CS:GO match predictor\"\
-          },\n        timeout=30,\n    )\n    if resp.status_code == 409:\n      \
-          \  resp = http.get(f\"{MR_API}/registered_models\", timeout=30)\n      \
-          \  resp.raise_for_status()\n        rm_id = next(rm[\"id\"] for rm in resp.json()[\"\
-          items\"] if rm[\"name\"] == MODEL_NAME)\n    else:\n        resp.raise_for_status()\n\
-          \        rm_id = resp.json()[\"id\"]\n\n    # Create ModelVersion with evaluation\
-          \ metrics as custom properties\n    mv_resp = http.post(\n        f\"{MR_API}/model_versions\"\
-          ,\n        json={\n            \"name\": version_name,\n            \"registeredModelId\"\
-          : rm_id,\n            \"customProperties\": {\n                \"accuracy\"\
-          : {\"metadataType\": \"MetadataDoubleValue\", \"double_value\": metrics_data[\"\
-          accuracy\"]},\n                \"roc_auc\":  {\"metadataType\": \"MetadataDoubleValue\"\
+          \ {accuracy_threshold}\")\n\n    version_name = uuid.uuid4().hex[:8]\n \
+          \   s3_key = f\"private-artifacts/csgo/models/{MODEL_NAME}/{version_name}/model.joblib\"\
+          \n    s3 = boto3.client(\n        \"s3\",\n        endpoint_url=s3_endpoint,\n\
+          \        aws_access_key_id=os.environ[\"AWS_ACCESS_KEY_ID\"],\n        aws_secret_access_key=os.environ[\"\
+          AWS_SECRET_ACCESS_KEY\"],\n    )\n    s3.upload_file(model.path, BUCKET,\
+          \ s3_key)\n    artifact_uri = f\"s3://{BUCKET}/{s3_key}\"\n    print(f\"\
+          Uploaded model \u2192 {artifact_uri}\")\n\n    # Create or retrieve RegisteredModel\n\
+          \    resp = http.post(\n        f\"{MR_API}/registered_models\",\n     \
+          \   json={\"name\": MODEL_NAME, \"description\": \"CS:GO match predictor\"\
+          },\n        timeout=30,\n    )\n    print(f\"POST registered_models \u2192\
+          \ {resp.status_code}: {resp.text}\")\n    if resp.status_code == 409:\n\
+          \        resp = http.get(f\"{MR_API}/registered_models\", timeout=30)\n\
+          \        resp.raise_for_status()\n        print(f\"GET registered_models\
+          \ \u2192 {resp.status_code}: {resp.text}\")\n        rm_id = next(rm[\"\
+          id\"] for rm in resp.json()[\"items\"] if rm[\"name\"] == MODEL_NAME)\n\
+          \    else:\n        resp.raise_for_status()\n        rm_id = resp.json()[\"\
+          id\"]\n    print(f\"RegisteredModel id={rm_id}\")\n\n    # Create ModelVersion\
+          \ with evaluation metrics as custom properties\n    mv_resp = http.post(\n\
+          \        f\"{MR_API}/model_versions\",\n        json={\n            \"name\"\
+          : version_name,\n            \"registeredModelId\": rm_id,\n           \
+          \ \"customProperties\": {\n                \"accuracy\": {\"metadataType\"\
+          : \"MetadataDoubleValue\", \"double_value\": metrics_data[\"accuracy\"]},\n\
+          \                \"roc_auc\":  {\"metadataType\": \"MetadataDoubleValue\"\
           , \"double_value\": metrics_data[\"roc_auc\"]},\n            },\n      \
-          \  },\n        timeout=30,\n    )\n    mv_resp.raise_for_status()\n    mv_id\
-          \ = mv_resp.json()[\"id\"]\n\n    # Link artifact URI to the model version\n\
-          \    ma_resp = http.post(\n        f\"{MR_API}/model_versions/{mv_id}/artifacts\"\
-          ,\n        json={\n            \"name\": f\"{MODEL_NAME}-{version_name}\"\
-          ,\n            \"uri\": artifact_uri,\n            \"artifactType\": \"\
-          model-artifact\",\n            \"state\": \"LIVE\",\n        },\n      \
-          \  timeout=30,\n    )\n    ma_resp.raise_for_status()\n\n    print(f\"Registered\
+          \  },\n        timeout=30,\n    )\n    print(f\"POST model_versions \u2192\
+          \ {mv_resp.status_code}: {mv_resp.text}\")\n    mv_resp.raise_for_status()\n\
+          \    mv_id = mv_resp.json()[\"id\"]\n    print(f\"ModelVersion id={mv_id}\"\
+          )\n\n    # Link artifact URI to the model version\n    ma_resp = http.post(\n\
+          \        f\"{MR_API}/model_versions/{mv_id}/artifacts\",\n        json={\n\
+          \            \"name\": f\"{MODEL_NAME}-{version_name}\",\n            \"\
+          uri\": artifact_uri,\n            \"artifactType\": \"model-artifact\",\n\
+          \            \"state\": \"LIVE\",\n        },\n        timeout=30,\n   \
+          \ )\n    print(f\"POST model_versions/{mv_id}/artifacts \u2192 {ma_resp.status_code}:\
+          \ {ma_resp.text}\")\n    ma_resp.raise_for_status()\n\n    print(f\"Registered\
           \ '{MODEL_NAME}' version '{version_name}' (id={mv_id}) \u2192 {artifact_uri}\"\
           )\n\n    with open(model_uri.path, \"w\") as f:\n        f.write(artifact_uri)\n\
           \n"
@@ -966,10 +974,10 @@ root:
           parameters:
             accuracy_threshold:
               componentInputParameter: accuracy_threshold
-            mlflow_tracking_uri:
-              componentInputParameter: mlflow_tracking_uri
             model_registry_url:
               componentInputParameter: model_registry_url
+            s3_endpoint:
+              componentInputParameter: s3_endpoint
         taskInfo:
           name: upload-model
   inputDefinitions:
@@ -986,10 +994,6 @@ root:
         defaultValue: 0.2
         isOptional: true
         parameterType: NUMBER_DOUBLE
-      mlflow_tracking_uri:
-        defaultValue: http://mlflow.kubeflow.svc.cluster.local:5000
-        isOptional: true
-        parameterType: STRING
       model_registry_url:
         defaultValue: http://model-registry-service.csgo.svc.cluster.local:8080
         isOptional: true
@@ -1002,6 +1006,10 @@ root:
         defaultValue: 10.0
         isOptional: true
         parameterType: NUMBER_INTEGER
+      s3_endpoint:
+        defaultValue: http://seaweedfs.kubeflow.svc.cluster.local:8333
+        isOptional: true
+        parameterType: STRING
       train_ratio:
         defaultValue: 0.8
         isOptional: true
