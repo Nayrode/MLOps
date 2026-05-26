@@ -126,7 +126,48 @@ uv run python pipeline.py
 # → pipeline.yaml
 ```
 
-### 3 — Upload and run
+### 3 — Test the TrainJob in isolation
+
+Before running the full pipeline, you can test the training step alone (uploads data to SeaweedFS, submits a TrainJob, waits for completion, downloads the model):
+
+```bash
+# In a separate terminal — expose SeaweedFS locally
+kubectl port-forward -n kubeflow svc/seaweedfs 9000:8333
+
+# Run the test (default timeout 700s — the job takes ~8 min due to Istio init + pip install)
+uv run python test_trainjob.py
+
+# Override namespace or timeout
+uv run python test_trainjob.py --namespace csgo --wait-timeout 900
+```
+
+Expected output:
+```
+1. Upload des données de test sur SeaweedFS...
+  uploaded → s3://mlpipeline/csgo/test-data/<ts>/X_train.csv
+  uploaded → s3://mlpipeline/csgo/test-data/<ts>/y_train.csv
+
+2. Soumission du TrainJob...
+TrainJob 'csgo-train-test-<ts>' soumis dans 'csgo'.
+
+3. Attente...
+  [  0s] active=1 succeeded=0 failed=0
+  ...
+TrainJob terminé avec succès.
+
+4. Téléchargement du modèle...
+  Modèle chargé : Pipeline
+Test OK.
+```
+
+Follow logs live while the job runs:
+```bash
+kubectl logs -n csgo -l trainer.kubeflow.org/trainjob=csgo-train-test-<ts> -f
+```
+
+> **Note:** The job runs on a GPU node (`mlops-worker-3` or `mlops-worker-4`). Istio sidecar injection adds ~4 minutes of init time before training starts.
+
+### 5 — Upload and run
 
 ```bash
 kubectl port-forward -n istio-system svc/istio-ingressgateway 8080:80
@@ -138,7 +179,7 @@ Open `http://localhost:8080`, then:
 - **Pipelines** → **Upload pipeline** → select `pipeline.yaml`
 - **Create run** → leave default parameters → **Start**
 
-### What each step does on the cluster
+### 6 — What each step does on the cluster
 
 ```
 feature-engineering   downloads results.csv from GitHub → computes 8 features → writes df_featured.csv to PVC

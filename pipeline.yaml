@@ -171,7 +171,31 @@ components:
             schemaTitle: system.Dataset
             schemaVersion: 0.0.1
       parameters:
+        learning_rate:
+          defaultValue: 0.05
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
+        max_depth:
+          defaultValue: 6.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
         model_type:
+          parameterType: STRING
+        n_estimators:
+          defaultValue: 300.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        namespace:
+          defaultValue: csgo
+          isOptional: true
+          parameterType: STRING
+        s3_bucket:
+          defaultValue: mlpipeline
+          isOptional: true
+          parameterType: STRING
+        s3_endpoint:
+          defaultValue: http://seaweedfs.kubeflow.svc.cluster.local:8333
+          isOptional: true
           parameterType: STRING
     outputDefinitions:
       artifacts:
@@ -218,7 +242,7 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kubernetes==32.0.0'\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kubernetes==36.0.0'\
           \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
           $0\" \"$@\"\n"
@@ -310,7 +334,7 @@ deploymentSpec:
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
           \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
-          \ 'scikit-learn==1.6.1' 'xgboost==3.2.0' 'joblib==1.5.0'  &&  python3 -m\
+          \ 'scikit-learn==1.8.0' 'xgboost==3.2.0' 'joblib==1.5.3'  &&  python3 -m\
           \ pip install --quiet --no-warn-script-location 'kfp==2.16.1' '--no-deps'\
           \ 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\
           \n"
@@ -350,7 +374,7 @@ deploymentSpec:
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
           \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
-          \ 'numpy==2.2.3'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'numpy==2.4.6'  &&  python3 -m pip install --quiet --no-warn-script-location\
           \ 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
           3.9\"' && \"$0\" \"$@\"\n"
         - sh
@@ -426,7 +450,7 @@ deploymentSpec:
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
           \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
-          \ 'scikit-learn==1.6.1' 'xgboost==3.2.0' 'joblib==1.5.0' 'evidently==0.7.21'\
+          \ 'scikit-learn==1.8.0' 'xgboost==3.2.0' 'joblib==1.5.3' 'evidently==0.7.21'\
           \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
           $0\" \"$@\"\n"
@@ -519,7 +543,7 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'requests==2.32.3'\
+          \ python3 -m pip install --quiet --no-warn-script-location 'requests==2.34.2'\
           \ 'pandas==2.2.3'  &&  python3 -m pip install --quiet --no-warn-script-location\
           \ 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
           3.9\"' && \"$0\" \"$@\"\n"
@@ -561,11 +585,10 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.3'\
-          \ 'scikit-learn==1.6.1' 'xgboost==3.2.0' 'joblib==1.5.0'  &&  python3 -m\
-          \ pip install --quiet --no-warn-script-location 'kfp==2.16.1' '--no-deps'\
-          \ 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\
-          \n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kubernetes==30.1.0'\
+          \ 'boto3==1.43.14' 'joblib==1.5.3'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -578,22 +601,111 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef train(\n    X_train: Input[Dataset],\n    y_train: Input[Dataset],\n\
-          \    model_type: str,\n    model: Output[Model],\n):\n    import joblib\n\
-          \    import pandas as pd\n    from sklearn.compose import ColumnTransformer\n\
-          \    from sklearn.pipeline import Pipeline\n    from sklearn.preprocessing\
-          \ import OneHotEncoder, StandardScaler\n    from xgboost import XGBClassifier\n\
-          \n    NUMERIC_COLS = [\"elo_diff\", \"winrate_10_diff\", \"winrate_30_diff\"\
-          ,\n                    \"experience_diff\", \"rank_diff\", \"h2h_winrate\"\
-          ,\n                    \"streak_diff\", \"map_winrate_diff\"]\n\n    X =\
-          \ pd.read_csv(X_train.path, index_col=0)\n    y = pd.read_csv(y_train.path,\
-          \ index_col=0).squeeze()\n\n    pipeline = Pipeline([\n        (\"preprocessor\"\
-          , ColumnTransformer([\n            (\"scaler\",  StandardScaler(), NUMERIC_COLS),\n\
-          \            (\"encoder\", OneHotEncoder(handle_unknown=\"ignore\", sparse_output=False),\
-          \ [\"_map\"]),\n        ])),\n        (\"classifier\", XGBClassifier(\n\
-          \            n_estimators=300, learning_rate=0.05,\n            max_depth=6,\
-          \ eval_metric=\"logloss\", random_state=42,\n        )),\n    ])\n    pipeline.fit(X,\
-          \ y)\n    print(f\"Train accuracy: {pipeline.score(X, y):.4f}\")\n    joblib.dump(pipeline,\
-          \ model.path)\n    print(f\"Saved model \u2192 {model.path}\")\n\n"
+          \    model_type: str,\n    model: Output[Model],\n    n_estimators: int\
+          \ = 300,\n    learning_rate: float = 0.05,\n    max_depth: int = 6,\n  \
+          \  namespace: str = \"csgo\",\n    s3_endpoint: str = \"http://seaweedfs.kubeflow.svc.cluster.local:8333\"\
+          ,\n    s3_bucket: str = \"mlpipeline\",\n):\n    import os\n    import time\n\
+          \    import boto3\n    from kubernetes import client as k8s, config as k8s_config\n\
+          \n    s3_key_id = os.environ.get(\"AWS_ACCESS_KEY_ID\", \"minio\")\n   \
+          \ s3_secret  = os.environ.get(\"AWS_SECRET_ACCESS_KEY\", \"minio123\")\n\
+          \n    # KFP artifact URIs use minio:// scheme \u2014 convert to s3:// for\
+          \ boto3.\n    x_uri = X_train.uri.replace(\"minio://\", \"s3://\")\n   \
+          \ y_uri = y_train.uri.replace(\"minio://\", \"s3://\")\n\n    ts       \
+          \ = int(time.time())\n    model_key = f\"csgo/models/{ts}/model.pkl\"\n\
+          \    job_name  = f\"csgo-train-{ts}\"\n\n    training_script = \"\"\"\\\n\
+          import subprocess, sys\nsubprocess.check_call([sys.executable, \"-m\", \"\
+          pip\", \"install\", \"-q\",\n    \"pandas==2.2.3\", \"scikit-learn==1.8.0\"\
+          , \"xgboost==3.2.0\",\n    \"joblib==1.5.3\", \"boto3==1.43.14\"])\nimport\
+          \ io, os, tempfile, boto3, joblib, pandas as pd\nfrom sklearn.compose import\
+          \ ColumnTransformer\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.preprocessing\
+          \ import OneHotEncoder, StandardScaler\nfrom xgboost import XGBClassifier\n\
+          \ns3 = boto3.client(\"s3\",\n    endpoint_url=os.environ[\"S3_ENDPOINT\"\
+          ],\n    aws_access_key_id=os.environ[\"AWS_ACCESS_KEY_ID\"],\n    aws_secret_access_key=os.environ[\"\
+          AWS_SECRET_ACCESS_KEY\"],\n)\n\ndef download_df(uri):\n    bucket, key =\
+          \ uri.replace(\"s3://\", \"\").split(\"/\", 1)\n    obj = s3.get_object(Bucket=bucket,\
+          \ Key=key)\n    return pd.read_csv(io.BytesIO(obj[\"Body\"].read()), index_col=0)\n\
+          \nX = download_df(os.environ[\"X_URI\"])\ny = download_df(os.environ[\"\
+          Y_URI\"]).squeeze()\nprint(f\"Loaded X_train {X.shape}, y_train {y.shape}\"\
+          )\n\nNUMERIC_COLS = [\"elo_diff\",\"winrate_10_diff\",\"winrate_30_diff\"\
+          ,\n    \"experience_diff\",\"rank_diff\",\"h2h_winrate\",\"streak_diff\"\
+          ,\"map_winrate_diff\"]\n\npipeline = Pipeline([\n    (\"preprocessor\",\
+          \ ColumnTransformer([\n        (\"scaler\",  StandardScaler(), NUMERIC_COLS),\n\
+          \        (\"encoder\", OneHotEncoder(handle_unknown=\"ignore\", sparse_output=False),\
+          \ [\"_map\"]),\n    ])),\n    (\"classifier\", XGBClassifier(\n        n_estimators=int(os.environ[\"\
+          N_ESTIMATORS\"]),\n        learning_rate=float(os.environ[\"LEARNING_RATE\"\
+          ]),\n        max_depth=int(os.environ[\"MAX_DEPTH\"]),\n        eval_metric=\"\
+          logloss\", random_state=42, device=\"cuda\",\n    )),\n])\npipeline.fit(X,\
+          \ y)\nprint(f\"Train accuracy: {pipeline.score(X, y):.4f}\")\n\nwith tempfile.NamedTemporaryFile(suffix=\"\
+          .pkl\", delete=False) as f:\n    joblib.dump(pipeline, f.name)\n    s3.upload_file(f.name,\
+          \ os.environ[\"S3_BUCKET\"], os.environ[\"MODEL_KEY\"])\nprint(f\"Model\
+          \ saved \u2192 s3://{os.environ['S3_BUCKET']}/{os.environ['MODEL_KEY']}\"\
+          )\n\"\"\"\n\n    k8s_config.load_incluster_config()\n    custom_api = k8s.CustomObjectsApi()\n\
+          \n    gpu_patch = {\n        \"manager\": \"pipeline-train-component\",\n\
+          \        \"trainingRuntimeSpec\": {\n            \"template\": {\n     \
+          \           \"spec\": {\n                    \"replicatedJobs\": [{\n  \
+          \                      \"name\": \"node\",\n                        \"template\"\
+          : {\n                            \"spec\": {\n                         \
+          \       \"template\": {\n                                    \"spec\": {\n\
+          \                                        \"tolerations\": [{\n         \
+          \                                   \"key\": \"nvidia.com/gpu\",\n     \
+          \                                       \"operator\": \"Equal\",\n     \
+          \                                       \"value\": \"present\",\n      \
+          \                                      \"effect\": \"NoSchedule\",\n   \
+          \                                     }],\n                            \
+          \            \"nodeSelector\": {\n                                     \
+          \       \"node-role.kubernetes.io/gpu\": \"true\",\n                   \
+          \                     },\n                                        \"containers\"\
+          : [{\n                                            \"name\": \"node\",\n\
+          \                                            \"resources\": {\n        \
+          \                                        \"requests\": {\"nvidia.com/gpu\"\
+          : \"1\"},\n                                                \"limits\": \
+          \  {\"nvidia.com/gpu\": \"1\"},\n                                      \
+          \      },\n                                        }],\n               \
+          \                     }\n                                }\n           \
+          \                 }\n                        }\n                    }]\n\
+          \                }\n            }\n        },\n    }\n\n    body = {\n \
+          \       \"apiVersion\": \"trainer.kubeflow.org/v1alpha1\",\n        \"kind\"\
+          : \"TrainJob\",\n        \"metadata\": {\"name\": job_name, \"namespace\"\
+          : namespace},\n        \"spec\": {\n            \"runtimeRef\": {\n    \
+          \            \"apiGroup\": \"trainer.kubeflow.org\",\n                \"\
+          kind\": \"ClusterTrainingRuntime\",\n                \"name\": \"xgboost-distributed\"\
+          ,\n            },\n            \"runtimePatches\": [gpu_patch],\n      \
+          \      \"trainer\": {\n                \"image\": \"python:3.11-slim\",\n\
+          \                \"command\": [\"python\", \"-c\", training_script],\n \
+          \               \"numNodes\": 1,\n                \"env\": [\n         \
+          \           {\"name\": \"S3_ENDPOINT\",           \"value\": s3_endpoint},\n\
+          \                    {\"name\": \"S3_BUCKET\",             \"value\": s3_bucket},\n\
+          \                    {\"name\": \"AWS_ACCESS_KEY_ID\",     \"value\": s3_key_id},\n\
+          \                    {\"name\": \"AWS_SECRET_ACCESS_KEY\", \"value\": s3_secret},\n\
+          \                    {\"name\": \"X_URI\",                 \"value\": x_uri},\n\
+          \                    {\"name\": \"Y_URI\",                 \"value\": y_uri},\n\
+          \                    {\"name\": \"MODEL_KEY\",             \"value\": model_key},\n\
+          \                    {\"name\": \"N_ESTIMATORS\",          \"value\": str(n_estimators)},\n\
+          \                    {\"name\": \"LEARNING_RATE\",         \"value\": str(learning_rate)},\n\
+          \                    {\"name\": \"MAX_DEPTH\",             \"value\": str(max_depth)},\n\
+          \                ],\n            },\n        },\n    }\n\n    custom_api.create_namespaced_custom_object(\n\
+          \        group=\"trainer.kubeflow.org\", version=\"v1alpha1\",\n       \
+          \ namespace=namespace, plural=\"trainjobs\", body=body,\n    )\n    print(f\"\
+          TrainJob '{job_name}' soumis dans '{namespace}'.\")\n\n    # Poll until\
+          \ succeeded or failed\n    interval, elapsed, timeout = 15, 0, 900\n   \
+          \ while elapsed < timeout:\n        job = custom_api.get_namespaced_custom_object(\n\
+          \            group=\"trainer.kubeflow.org\", version=\"v1alpha1\",\n   \
+          \         namespace=namespace, plural=\"trainjobs\", name=job_name,\n  \
+          \      )\n        for js in job.get(\"status\", {}).get(\"jobsStatus\",\
+          \ []):\n            if js.get(\"name\") == \"node\":\n                active,\
+          \ succeeded, failed = js.get(\"active\", 0), js.get(\"succeeded\", 0), js.get(\"\
+          failed\", 0)\n                print(f\"  [{elapsed:3d}s] active={active}\
+          \ succeeded={succeeded} failed={failed}\")\n                if succeeded\
+          \ >= 1:\n                    print(\"TrainJob termin\xE9 avec succ\xE8s.\"\
+          )\n                    break\n                if failed >= 1:\n        \
+          \            raise RuntimeError(f\"TrainJob '{job_name}' a \xE9chou\xE9\
+          .\")\n        else:\n            time.sleep(interval)\n            elapsed\
+          \ += interval\n            continue\n        break\n    else:\n        raise\
+          \ TimeoutError(f\"TrainJob '{job_name}' timeout apr\xE8s {timeout}s.\")\n\
+          \n    s3 = boto3.client(\"s3\", endpoint_url=s3_endpoint,\n            \
+          \          aws_access_key_id=s3_key_id, aws_secret_access_key=s3_secret)\n\
+          \    s3.download_file(s3_bucket, model_key, model.path)\n    print(f\"Model\
+          \ artifact \u2192 {model.path}\")\n\n"
         image: python:3.11-slim
     exec-upload-model:
       container:
@@ -607,11 +719,11 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow==2.19.0'\
-          \ 'scikit-learn==1.6.1' 'xgboost==3.2.0' 'joblib==1.5.0' 'boto3==1.36.0'\
-          \ 'requests==2.32.3'  &&  python3 -m pip install --quiet --no-warn-script-location\
-          \ 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
-          3.9\"' && \"$0\" \"$@\"\n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow==3.12.0'\
+          \ 'scikit-learn==1.8.0' 'xgboost==3.2.0' 'joblib==1.5.3' 'boto3==1.43.14'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -829,6 +941,8 @@ root:
           parameters:
             model_type:
               componentInputParameter: model_type
+            namespace:
+              componentInputParameter: deploy_namespace
         taskInfo:
           name: train
       upload-model:
@@ -903,35 +1017,134 @@ platforms:
           nodeSelector:
             labels:
               node-role.kubernetes.io/worker: worker
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: accesskey
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: secretkey
+            optional: false
+            secretName: mlpipeline-minio-artifact
+            secretNameParameter:
+              runtimeValue:
+                constant: mlpipeline-minio-artifact
         exec-dvc-pull:
           nodeSelector:
             labels:
               node-role.kubernetes.io/worker: worker
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: accesskey
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: secretkey
+            optional: false
+            secretName: mlpipeline-minio-artifact
+            secretNameParameter:
+              runtimeValue:
+                constant: mlpipeline-minio-artifact
         exec-evaluate:
           nodeSelector:
             labels:
               node-role.kubernetes.io/worker: worker
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: accesskey
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: secretkey
+            optional: false
+            secretName: mlpipeline-minio-artifact
+            secretNameParameter:
+              runtimeValue:
+                constant: mlpipeline-minio-artifact
         exec-feature-engineering:
           nodeSelector:
             labels:
               node-role.kubernetes.io/worker: worker
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: accesskey
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: secretkey
+            optional: false
+            secretName: mlpipeline-minio-artifact
+            secretNameParameter:
+              runtimeValue:
+                constant: mlpipeline-minio-artifact
         exec-monitoring:
           nodeSelector:
             labels:
               node-role.kubernetes.io/worker: worker
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: accesskey
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: secretkey
+            optional: false
+            secretName: mlpipeline-minio-artifact
+            secretNameParameter:
+              runtimeValue:
+                constant: mlpipeline-minio-artifact
         exec-preprocessing:
           nodeSelector:
             labels:
               node-role.kubernetes.io/worker: worker
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: accesskey
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: secretkey
+            optional: false
+            secretName: mlpipeline-minio-artifact
+            secretNameParameter:
+              runtimeValue:
+                constant: mlpipeline-minio-artifact
         exec-test-inference:
           nodeSelector:
             labels:
               node-role.kubernetes.io/worker: worker
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: accesskey
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: secretkey
+            optional: false
+            secretName: mlpipeline-minio-artifact
+            secretNameParameter:
+              runtimeValue:
+                constant: mlpipeline-minio-artifact
         exec-train:
           nodeSelector:
             labels:
               node-role.kubernetes.io/worker: worker
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: accesskey
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: secretkey
+            optional: false
+            secretName: mlpipeline-minio-artifact
+            secretNameParameter:
+              runtimeValue:
+                constant: mlpipeline-minio-artifact
         exec-upload-model:
           nodeSelector:
             labels:
               node-role.kubernetes.io/worker: worker
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: accesskey
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: secretkey
+            optional: false
+            secretName: mlpipeline-minio-artifact
+            secretNameParameter:
+              runtimeValue:
+                constant: mlpipeline-minio-artifact

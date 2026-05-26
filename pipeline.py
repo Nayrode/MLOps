@@ -11,7 +11,7 @@ Usage:
 import argparse
 from kfp import compiler, dsl
 from kfp.dsl import Dataset, Model, Metrics, Artifact, Input, Output
-from kfp.kubernetes import add_node_selector
+from kfp.kubernetes import add_node_selector, mount_pvc, use_secret_as_env
 
 BASE_IMAGE = "python:3.11-slim"
 
@@ -34,7 +34,7 @@ def dvc_pull(raw_data: Output[Dataset]):
 
 @dsl.component(
     base_image=BASE_IMAGE,
-    packages_to_install=["pandas==2.2.3", "numpy==2.2.3"],
+    packages_to_install=["pandas==2.2.3", "numpy==2.4.6"],
 )
 def feature_engineering(
     raw_data: Input[Dataset],
@@ -139,49 +139,224 @@ def preprocessing(
     print(f"Train: {len(train_df)} | Test: {len(test_df)}")
 
 
+
 @dsl.component(
     base_image=BASE_IMAGE,
-    packages_to_install=["pandas==2.2.3", "scikit-learn==1.6.1", "xgboost==3.2.0", "joblib==1.5.0"],
+    packages_to_install=["kubernetes==30.1.0"],
+)
+def create_train_pvc(namespace: str = "csgo", pvc_name: str = "csgo-train-data"):
+    from kubernetes import client as k8s, config as k8s_config
+    k8s_config.load_incluster_config()
+    core = k8s.CoreV1Api()
+
+    existing = [p.metadata.name for p in core.list_namespaced_persistent_volume_claim(namespace).items]
+    if pvc_name in existing:
+        print(f"PVC {pvc_name} already exists, skipping.")
+        return
+
+    pvc = k8s.V1PersistentVolumeClaim(
+        metadata=k8s.V1ObjectMeta(name=pvc_name, namespace=namespace),
+        spec=k8s.V1PersistentVolumeClaimSpec(
+            access_modes=["ReadWriteMany"],
+            resources=k8s.V1ResourceRequirements(requests={"storage": "1Gi"}),
+        ),
+    )
+    core.create_namespaced_persistent_volume_claim(namespace=namespace, body=pvc)
+    print(f"Created RWX PVC {pvc_name} in namespace {namespace}")
+
+
+@dsl.component(
+    base_image=BASE_IMAGE,
+    packages_to_install=["kubernetes==30.1.0", "boto3==1.43.14", "joblib==1.5.3"],
 )
 def train(
     X_train: Input[Dataset],
     y_train: Input[Dataset],
     model_type: str,
     model: Output[Model],
+    n_estimators: int = 300,
+    learning_rate: float = 0.05,
+    max_depth: int = 6,
+    namespace: str = "csgo",
+    s3_endpoint: str = "http://seaweedfs.kubeflow.svc.cluster.local:8333",
+    s3_bucket: str = "mlpipeline",
 ):
-    import joblib
-    import pandas as pd
-    from sklearn.compose import ColumnTransformer
-    from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import OneHotEncoder, StandardScaler
-    from xgboost import XGBClassifier
+    import os
+    import time
+    import boto3
+    from kubernetes import client as k8s, config as k8s_config
 
-    NUMERIC_COLS = ["elo_diff", "winrate_10_diff", "winrate_30_diff",
-                    "experience_diff", "rank_diff", "h2h_winrate",
-                    "streak_diff", "map_winrate_diff"]
+    s3_key_id = os.environ.get("AWS_ACCESS_KEY_ID", "minio")
+    s3_secret  = os.environ.get("AWS_SECRET_ACCESS_KEY", "minio123")
 
-    X = pd.read_csv(X_train.path, index_col=0)
-    y = pd.read_csv(y_train.path, index_col=0).squeeze()
+    # KFP artifact URIs use minio:// scheme — convert to s3:// for boto3.
+    x_uri = X_train.uri.replace("minio://", "s3://")
+    y_uri = y_train.uri.replace("minio://", "s3://")
 
-    pipeline = Pipeline([
-        ("preprocessor", ColumnTransformer([
-            ("scaler",  StandardScaler(), NUMERIC_COLS),
-            ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False), ["_map"]),
-        ])),
-        ("classifier", XGBClassifier(
-            n_estimators=300, learning_rate=0.05,
-            max_depth=6, eval_metric="logloss", random_state=42,
-        )),
-    ])
-    pipeline.fit(X, y)
-    print(f"Train accuracy: {pipeline.score(X, y):.4f}")
-    joblib.dump(pipeline, model.path)
-    print(f"Saved model → {model.path}")
+    ts        = int(time.time())
+    model_key = f"csgo/models/{ts}/model.pkl"
+    job_name  = f"csgo-train-{ts}"
+
+    training_script = """\
+import subprocess, sys
+subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
+    "pandas==2.2.3", "scikit-learn==1.8.0", "xgboost==3.2.0",
+    "joblib==1.5.3", "boto3==1.43.14"])
+import io, os, tempfile, boto3, joblib, pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from xgboost import XGBClassifier
+
+s3 = boto3.client("s3",
+    endpoint_url=os.environ["S3_ENDPOINT"],
+    aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+    aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+)
+
+def download_df(uri):
+    bucket, key = uri.replace("s3://", "").split("/", 1)
+    obj = s3.get_object(Bucket=bucket, Key=key)
+    return pd.read_csv(io.BytesIO(obj["Body"].read()), index_col=0)
+
+X = download_df(os.environ["X_URI"])
+y = download_df(os.environ["Y_URI"]).squeeze()
+print(f"Loaded X_train {X.shape}, y_train {y.shape}")
+
+NUMERIC_COLS = ["elo_diff","winrate_10_diff","winrate_30_diff",
+    "experience_diff","rank_diff","h2h_winrate","streak_diff","map_winrate_diff"]
+
+pipeline = Pipeline([
+    ("preprocessor", ColumnTransformer([
+        ("scaler",  StandardScaler(), NUMERIC_COLS),
+        ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False), ["_map"]),
+    ])),
+    ("classifier", XGBClassifier(
+        n_estimators=int(os.environ["N_ESTIMATORS"]),
+        learning_rate=float(os.environ["LEARNING_RATE"]),
+        max_depth=int(os.environ["MAX_DEPTH"]),
+        eval_metric="logloss", random_state=42, device="cuda",
+    )),
+])
+pipeline.fit(X, y)
+print(f"Train accuracy: {pipeline.score(X, y):.4f}")
+
+with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
+    joblib.dump(pipeline, f.name)
+    s3.upload_file(f.name, os.environ["S3_BUCKET"], os.environ["MODEL_KEY"])
+print(f"Model saved → s3://{os.environ['S3_BUCKET']}/{os.environ['MODEL_KEY']}")
+"""
+
+    k8s_config.load_incluster_config()
+    custom_api = k8s.CustomObjectsApi()
+
+    gpu_patch = {
+        "manager": "pipeline-train-component",
+        "trainingRuntimeSpec": {
+            "template": {
+                "spec": {
+                    "replicatedJobs": [{
+                        "name": "node",
+                        "template": {
+                            "spec": {
+                                "template": {
+                                    "spec": {
+                                        "tolerations": [{
+                                            "key": "nvidia.com/gpu",
+                                            "operator": "Equal",
+                                            "value": "present",
+                                            "effect": "NoSchedule",
+                                        }],
+                                        "nodeSelector": {
+                                            "node-role.kubernetes.io/gpu": "true",
+                                        },
+                                        "containers": [{
+                                            "name": "node",
+                                            "resources": {
+                                                "requests": {"nvidia.com/gpu": "1"},
+                                                "limits":   {"nvidia.com/gpu": "1"},
+                                            },
+                                        }],
+                                    }
+                                }
+                            }
+                        }
+                    }]
+                }
+            }
+        },
+    }
+
+    body = {
+        "apiVersion": "trainer.kubeflow.org/v1alpha1",
+        "kind": "TrainJob",
+        "metadata": {"name": job_name, "namespace": namespace},
+        "spec": {
+            "runtimeRef": {
+                "apiGroup": "trainer.kubeflow.org",
+                "kind": "ClusterTrainingRuntime",
+                "name": "xgboost-distributed",
+            },
+            "runtimePatches": [gpu_patch],
+            "trainer": {
+                "image": "python:3.11-slim",
+                "command": ["python", "-c", training_script],
+                "numNodes": 1,
+                "env": [
+                    {"name": "S3_ENDPOINT",           "value": s3_endpoint},
+                    {"name": "S3_BUCKET",             "value": s3_bucket},
+                    {"name": "AWS_ACCESS_KEY_ID",     "value": s3_key_id},
+                    {"name": "AWS_SECRET_ACCESS_KEY", "value": s3_secret},
+                    {"name": "X_URI",                 "value": x_uri},
+                    {"name": "Y_URI",                 "value": y_uri},
+                    {"name": "MODEL_KEY",             "value": model_key},
+                    {"name": "N_ESTIMATORS",          "value": str(n_estimators)},
+                    {"name": "LEARNING_RATE",         "value": str(learning_rate)},
+                    {"name": "MAX_DEPTH",             "value": str(max_depth)},
+                ],
+            },
+        },
+    }
+
+    custom_api.create_namespaced_custom_object(
+        group="trainer.kubeflow.org", version="v1alpha1",
+        namespace=namespace, plural="trainjobs", body=body,
+    )
+    print(f"TrainJob '{job_name}' soumis dans '{namespace}'.")
+
+    # Poll until succeeded or failed
+    interval, elapsed, timeout = 15, 0, 900
+    while elapsed < timeout:
+        job = custom_api.get_namespaced_custom_object(
+            group="trainer.kubeflow.org", version="v1alpha1",
+            namespace=namespace, plural="trainjobs", name=job_name,
+        )
+        for js in job.get("status", {}).get("jobsStatus", []):
+            if js.get("name") == "node":
+                active, succeeded, failed = js.get("active", 0), js.get("succeeded", 0), js.get("failed", 0)
+                print(f"  [{elapsed:3d}s] active={active} succeeded={succeeded} failed={failed}")
+                if succeeded >= 1:
+                    print("TrainJob terminé avec succès.")
+                    break
+                if failed >= 1:
+                    raise RuntimeError(f"TrainJob '{job_name}' a échoué.")
+        else:
+            time.sleep(interval)
+            elapsed += interval
+            continue
+        break
+    else:
+        raise TimeoutError(f"TrainJob '{job_name}' timeout après {timeout}s.")
+
+    s3 = boto3.client("s3", endpoint_url=s3_endpoint,
+                      aws_access_key_id=s3_key_id, aws_secret_access_key=s3_secret)
+    s3.download_file(s3_bucket, model_key, model.path)
+    print(f"Model artifact → {model.path}")
 
 
 @dsl.component(
     base_image=BASE_IMAGE,
-    packages_to_install=["pandas==2.2.3", "scikit-learn==1.6.1", "xgboost==3.2.0", "joblib==1.5.0"],
+    packages_to_install=["pandas==2.2.3", "scikit-learn==1.8.0", "xgboost==3.2.0", "joblib==1.5.3"],
 )
 def evaluate(
     model: Input[Model],
@@ -212,8 +387,8 @@ def evaluate(
 
 @dsl.component(
     base_image=BASE_IMAGE,
-    packages_to_install=["mlflow==2.19.0", "scikit-learn==1.6.1", "xgboost==3.2.0",
-                         "joblib==1.5.0", "boto3==1.36.0", "requests==2.32.3"],
+    packages_to_install=["mlflow==3.12.0", "scikit-learn==1.8.0", "xgboost==3.2.0",
+                         "joblib==1.5.3", "boto3==1.43.14"],
 )
 def upload_model(
     model: Input[Model],
@@ -302,7 +477,7 @@ def upload_model(
 
 @dsl.component(
     base_image=BASE_IMAGE,
-    packages_to_install=["kubernetes==32.0.0"],
+    packages_to_install=["kubernetes==36.0.0"],
 )
 def deploy(
     model_uri: Input[Artifact],
@@ -368,7 +543,7 @@ def deploy(
 
 @dsl.component(
     base_image=BASE_IMAGE,
-    packages_to_install=["requests==2.32.3", "pandas==2.2.3"],
+    packages_to_install=["requests==2.34.2", "pandas==2.2.3"],
 )
 def test_inference(
     inference_url: Input[Artifact],
@@ -403,8 +578,8 @@ def test_inference(
 
 @dsl.component(
     base_image=BASE_IMAGE,
-    packages_to_install=["pandas==2.2.3", "scikit-learn==1.6.1", "xgboost==3.2.0",
-                         "joblib==1.5.0", "evidently==0.7.21"],
+    packages_to_install=["pandas==2.2.3", "scikit-learn==1.8.0", "xgboost==3.2.0",
+                         "joblib==1.5.3", "evidently==0.7.21"],
 )
 def monitoring(
     X_train: Input[Dataset],
@@ -479,7 +654,8 @@ def csgo_pipeline(
         X_train=step02.outputs["X_train"],
         y_train=step02.outputs["y_train"],
         model_type=model_type,
-    )
+        namespace=deploy_namespace,
+    ).after(step02)
 
     step04 = evaluate(
         model=step03.outputs["model"],
@@ -517,14 +693,20 @@ def csgo_pipeline(
 
     for task in [step00, step01, step02, step03, step04, step05, step06, step07, step08]:
         add_node_selector(task, label_key="node-role.kubernetes.io/worker", label_value="worker")
+        use_secret_as_env(
+            task,
+            secret_name="mlpipeline-minio-artifact",
+            secret_key_to_env={"accesskey": "AWS_ACCESS_KEY_ID", "secretkey": "AWS_SECRET_ACCESS_KEY"},
+        )
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run",  action="store_true")
-    parser.add_argument("--host", default="http://localhost:3000")
+    parser.add_argument("--run",       action="store_true")
+    parser.add_argument("--host",      default="http://localhost:3000")
+    parser.add_argument("--namespace", default="csgo")
     args = parser.parse_args()
 
     compiler.Compiler().compile(csgo_pipeline, "pipeline.yaml")
@@ -532,10 +714,11 @@ if __name__ == "__main__":
 
     if args.run:
         import kfp
-        client = kfp.Client(host=args.host)
+        client = kfp.Client(host=args.host, namespace=args.namespace)
         run = client.create_run_from_pipeline_func(
             csgo_pipeline,
             arguments={"model_type": "xgboost"},
             run_name="csgo-run",
+            namespace=args.namespace,
         )
         print(f"Submitted → {run.run_id}")
