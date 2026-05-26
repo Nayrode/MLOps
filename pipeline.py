@@ -213,24 +213,24 @@ def evaluate(
 @dsl.component(
     base_image=BASE_IMAGE,
     packages_to_install=["mlflow==2.19.0", "scikit-learn==1.6.1", "xgboost==3.2.0",
-                         "joblib==1.5.0", "boto3==1.36.0"],
+                         "joblib==1.5.0", "boto3==1.36.0", "requests==2.32.3"],
 )
 def upload_model(
     model: Input[Model],
     eval_results: Input[Artifact],
     accuracy_threshold: float,
     mlflow_tracking_uri: str,
+    model_registry_url: str,
     model_uri: Output[Artifact],
 ):
     import json
     import joblib
     import mlflow
     import mlflow.sklearn
-    from mlflow.tracking import MlflowClient
-    MODEL_NAME = "csgo-match-predictor"
+    import requests as http
 
-    mlflow.set_tracking_uri(mlflow_tracking_uri)
-    mlflow.set_experiment(MODEL_NAME)
+    MODEL_NAME = "csgo-match-predictor"
+    MR_API = f"{model_registry_url}/api/model_registry/v1alpha3"
 
     pipeline = joblib.load(model.path)
     with open(eval_results.path) as f:
@@ -240,26 +240,64 @@ def upload_model(
     if metrics_data["accuracy"] < accuracy_threshold:
         raise ValueError(f"Accuracy {metrics_data['accuracy']:.4f} below threshold {accuracy_threshold}")
 
+    # Store artifact via MLflow, retrieve actual S3 URI
+    mlflow.set_tracking_uri(mlflow_tracking_uri)
+    mlflow.set_experiment(MODEL_NAME)
     with mlflow.start_run(run_name="kubeflow-pipeline") as run:
         mlflow.log_metrics(metrics_data)
         mlflow.log_params({"model_type": type(pipeline.named_steps["classifier"]).__name__})
-        info = mlflow.sklearn.log_model(
-            pipeline,
-            artifact_path="model",
-            registered_model_name=MODEL_NAME,
-        )
-        uri = info.model_uri
+        mlflow.sklearn.log_model(pipeline, artifact_path="model")
+        artifact_uri = mlflow.get_artifact_uri("model")
 
-    client = MlflowClient(tracking_uri=mlflow_tracking_uri)
-    versions = client.get_latest_versions(MODEL_NAME, stages=["None"])
-    latest = versions[0]
-    client.transition_model_version_stage(
-        name=MODEL_NAME, version=latest.version, stage="Staging",
+    version_name = run.info.run_id[:8]
+
+    # Create or retrieve RegisteredModel
+    resp = http.post(
+        f"{MR_API}/registered_models",
+        json={"name": MODEL_NAME, "description": "CS:GO match predictor"},
+        timeout=30,
     )
-    print(f"Version {latest.version} → Staging  (uri: {uri})")
+    if resp.status_code == 409:
+        resp = http.get(f"{MR_API}/registered_models", timeout=30)
+        resp.raise_for_status()
+        rm_id = next(rm["id"] for rm in resp.json()["items"] if rm["name"] == MODEL_NAME)
+    else:
+        resp.raise_for_status()
+        rm_id = resp.json()["id"]
+
+    # Create ModelVersion with evaluation metrics as custom properties
+    mv_resp = http.post(
+        f"{MR_API}/model_versions",
+        json={
+            "name": version_name,
+            "registeredModelId": rm_id,
+            "customProperties": {
+                "accuracy": {"metadataType": "MetadataDoubleValue", "double_value": metrics_data["accuracy"]},
+                "roc_auc":  {"metadataType": "MetadataDoubleValue", "double_value": metrics_data["roc_auc"]},
+            },
+        },
+        timeout=30,
+    )
+    mv_resp.raise_for_status()
+    mv_id = mv_resp.json()["id"]
+
+    # Link artifact URI to the model version
+    ma_resp = http.post(
+        f"{MR_API}/model_versions/{mv_id}/artifacts",
+        json={
+            "name": f"{MODEL_NAME}-{version_name}",
+            "uri": artifact_uri,
+            "artifactType": "model-artifact",
+            "state": "LIVE",
+        },
+        timeout=30,
+    )
+    ma_resp.raise_for_status()
+
+    print(f"Registered '{MODEL_NAME}' version '{version_name}' (id={mv_id}) → {artifact_uri}")
 
     with open(model_uri.path, "w") as f:
-        f.write(uri)
+        f.write(artifact_uri)
 
 
 @dsl.component(
@@ -424,6 +462,7 @@ def csgo_pipeline(
     accuracy_threshold: float = 0.60,
     drift_threshold: float = 0.20,
     mlflow_tracking_uri: str = "http://mlflow.kubeflow.svc.cluster.local:5000",
+    model_registry_url: str = "http://model-registry-service.csgo.svc.cluster.local:8080",
     deploy_namespace: str = "csgo",
     n_samples: int = 10,
 ):
@@ -453,6 +492,7 @@ def csgo_pipeline(
         eval_results=step04.outputs["eval_results"],
         accuracy_threshold=accuracy_threshold,
         mlflow_tracking_uri=mlflow_tracking_uri,
+        model_registry_url=model_registry_url,
     )
 
     step06 = deploy(

@@ -5,6 +5,7 @@
 #    deploy_namespace: str [Default: 'csgo']
 #    drift_threshold: float [Default: 0.2]
 #    mlflow_tracking_uri: str [Default: 'http://mlflow.kubeflow.svc.cluster.local:5000']
+#    model_registry_url: str [Default: 'http://model-registry-service.csgo.svc.cluster.local:8080']
 #    model_type: str [Default: 'xgboost']
 #    n_samples: int [Default: 10.0]
 #    train_ratio: float [Default: 0.8]
@@ -194,6 +195,8 @@ components:
         accuracy_threshold:
           parameterType: NUMBER_DOUBLE
         mlflow_tracking_uri:
+          parameterType: STRING
+        model_registry_url:
           parameterType: STRING
     outputDefinitions:
       artifacts:
@@ -606,9 +609,9 @@ deploymentSpec:
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
           \ python3 -m pip install --quiet --no-warn-script-location 'mlflow==2.19.0'\
           \ 'scikit-learn==1.6.1' 'xgboost==3.2.0' 'joblib==1.5.0' 'boto3==1.36.0'\
-          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
-          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
-          $0\" \"$@\"\n"
+          \ 'requests==2.32.3'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -621,26 +624,45 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef upload_model(\n    model: Input[Model],\n    eval_results: Input[Artifact],\n\
-          \    accuracy_threshold: float,\n    mlflow_tracking_uri: str,\n    model_uri:\
-          \ Output[Artifact],\n):\n    import json\n    import joblib\n    import\
-          \ mlflow\n    import mlflow.sklearn\n    from mlflow.tracking import MlflowClient\n\
-          \    MODEL_NAME = \"csgo-match-predictor\"\n\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n\
-          \    mlflow.set_experiment(MODEL_NAME)\n\n    pipeline = joblib.load(model.path)\n\
+          \    accuracy_threshold: float,\n    mlflow_tracking_uri: str,\n    model_registry_url:\
+          \ str,\n    model_uri: Output[Artifact],\n):\n    import json\n    import\
+          \ joblib\n    import mlflow\n    import mlflow.sklearn\n    import requests\
+          \ as http\n\n    MODEL_NAME = \"csgo-match-predictor\"\n    MR_API = f\"\
+          {model_registry_url}/api/model_registry/v1alpha3\"\n\n    pipeline = joblib.load(model.path)\n\
           \    with open(eval_results.path) as f:\n        metrics_data = json.load(f)\n\
           \n    print(f\"Accuracy: {metrics_data['accuracy']:.4f} | AUC: {metrics_data['roc_auc']:.4f}\"\
           )\n    if metrics_data[\"accuracy\"] < accuracy_threshold:\n        raise\
           \ ValueError(f\"Accuracy {metrics_data['accuracy']:.4f} below threshold\
-          \ {accuracy_threshold}\")\n\n    with mlflow.start_run(run_name=\"kubeflow-pipeline\"\
-          ) as run:\n        mlflow.log_metrics(metrics_data)\n        mlflow.log_params({\"\
-          model_type\": type(pipeline.named_steps[\"classifier\"]).__name__})\n  \
-          \      info = mlflow.sklearn.log_model(\n            pipeline,\n       \
-          \     artifact_path=\"model\",\n            registered_model_name=MODEL_NAME,\n\
-          \        )\n        uri = info.model_uri\n\n    client = MlflowClient(tracking_uri=mlflow_tracking_uri)\n\
-          \    versions = client.get_latest_versions(MODEL_NAME, stages=[\"None\"\
-          ])\n    latest = versions[0]\n    client.transition_model_version_stage(\n\
-          \        name=MODEL_NAME, version=latest.version, stage=\"Staging\",\n \
-          \   )\n    print(f\"Version {latest.version} \u2192 Staging  (uri: {uri})\"\
-          )\n\n    with open(model_uri.path, \"w\") as f:\n        f.write(uri)\n\n"
+          \ {accuracy_threshold}\")\n\n    # Store artifact via MLflow, retrieve actual\
+          \ S3 URI\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n    mlflow.set_experiment(MODEL_NAME)\n\
+          \    with mlflow.start_run(run_name=\"kubeflow-pipeline\") as run:\n   \
+          \     mlflow.log_metrics(metrics_data)\n        mlflow.log_params({\"model_type\"\
+          : type(pipeline.named_steps[\"classifier\"]).__name__})\n        mlflow.sklearn.log_model(pipeline,\
+          \ artifact_path=\"model\")\n        artifact_uri = mlflow.get_artifact_uri(\"\
+          model\")\n\n    version_name = run.info.run_id[:8]\n\n    # Create or retrieve\
+          \ RegisteredModel\n    resp = http.post(\n        f\"{MR_API}/registered_models\"\
+          ,\n        json={\"name\": MODEL_NAME, \"description\": \"CS:GO match predictor\"\
+          },\n        timeout=30,\n    )\n    if resp.status_code == 409:\n      \
+          \  resp = http.get(f\"{MR_API}/registered_models\", timeout=30)\n      \
+          \  resp.raise_for_status()\n        rm_id = next(rm[\"id\"] for rm in resp.json()[\"\
+          items\"] if rm[\"name\"] == MODEL_NAME)\n    else:\n        resp.raise_for_status()\n\
+          \        rm_id = resp.json()[\"id\"]\n\n    # Create ModelVersion with evaluation\
+          \ metrics as custom properties\n    mv_resp = http.post(\n        f\"{MR_API}/model_versions\"\
+          ,\n        json={\n            \"name\": version_name,\n            \"registeredModelId\"\
+          : rm_id,\n            \"customProperties\": {\n                \"accuracy\"\
+          : {\"metadataType\": \"MetadataDoubleValue\", \"double_value\": metrics_data[\"\
+          accuracy\"]},\n                \"roc_auc\":  {\"metadataType\": \"MetadataDoubleValue\"\
+          , \"double_value\": metrics_data[\"roc_auc\"]},\n            },\n      \
+          \  },\n        timeout=30,\n    )\n    mv_resp.raise_for_status()\n    mv_id\
+          \ = mv_resp.json()[\"id\"]\n\n    # Link artifact URI to the model version\n\
+          \    ma_resp = http.post(\n        f\"{MR_API}/model_versions/{mv_id}/artifacts\"\
+          ,\n        json={\n            \"name\": f\"{MODEL_NAME}-{version_name}\"\
+          ,\n            \"uri\": artifact_uri,\n            \"artifactType\": \"\
+          model-artifact\",\n            \"state\": \"LIVE\",\n        },\n      \
+          \  timeout=30,\n    )\n    ma_resp.raise_for_status()\n\n    print(f\"Registered\
+          \ '{MODEL_NAME}' version '{version_name}' (id={mv_id}) \u2192 {artifact_uri}\"\
+          )\n\n    with open(model_uri.path, \"w\") as f:\n        f.write(artifact_uri)\n\
+          \n"
         image: python:3.11-slim
 pipelineInfo:
   name: csgo-match-predictor
@@ -832,6 +854,8 @@ root:
               componentInputParameter: accuracy_threshold
             mlflow_tracking_uri:
               componentInputParameter: mlflow_tracking_uri
+            model_registry_url:
+              componentInputParameter: model_registry_url
         taskInfo:
           name: upload-model
   inputDefinitions:
@@ -850,6 +874,10 @@ root:
         parameterType: NUMBER_DOUBLE
       mlflow_tracking_uri:
         defaultValue: http://mlflow.kubeflow.svc.cluster.local:5000
+        isOptional: true
+        parameterType: STRING
+      model_registry_url:
+        defaultValue: http://model-registry-service.csgo.svc.cluster.local:8080
         isOptional: true
         parameterType: STRING
       model_type:
